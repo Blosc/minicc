@@ -2504,7 +2504,7 @@ static void gen_opic(int op)
     }
 }
 
-#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
+#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386 || defined TCC_TARGET_ARM64
 # define gen_negf gen_opf
 #elif defined TCC_TARGET_ARM
 void gen_negf(int op)

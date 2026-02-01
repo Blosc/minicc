@@ -373,6 +373,17 @@ long double __divtf3(long double fa, long double fb)
     return f3_round(x_sgn, x_exp, x);
 }
 
+long double __negtf2(long double f)
+{
+    u128_t a;
+
+    memcpy(&a, &f, 16);
+    a.x1 ^= 1UL << 63;
+    memcpy(&f, &a, 16);
+
+    return f;
+}
+
 long double __extendsftf2(float f)
 {
     long double fx;
