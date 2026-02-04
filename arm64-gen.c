@@ -1908,6 +1908,7 @@ ST_FUNC void gen_opf(int op)
             o(0x7100001f); // cmp w0,#0
             o(0x1a9f07e0 | (uint32_t)cond << 12); // cset w0,(cond)
         }
+        arm64_vset_VT_CMP(op);
         return;
     }
 
