@@ -3097,6 +3097,9 @@ op_err:
 #endif
             type1 = vtop[-1].type;
             vpush_type_size(pointed_type(&vtop[-1].type), &align);
+            if (!(vtop[-1].type.t & VT_UNSIGNED)) {
+                gen_cast_s(VT_PTRDIFF_T);
+            }
             gen_op('*');
 #ifdef CONFIG_TCC_BCHECK
             if (tcc_state->do_bounds_check && !CONST_WANTED) {
