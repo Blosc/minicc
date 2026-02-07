@@ -1863,7 +1863,7 @@ ST_FUNC void gen_opf(int op)
         case VT_FLOAT:
         case VT_DOUBLE:
             gv(RC_FLOAT);
-            dbl = vtop[0].type.t == VT_DOUBLE;
+            dbl = (vtop[0].type.t & VT_BTYPE) == VT_DOUBLE;
 
             a = fltr(vtop[0].r);
             vtop--;
