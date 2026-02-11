@@ -272,6 +272,28 @@ if(MINICC_ENABLE_TESTING)
   include(CTest)
   add_test(NAME minicc.version COMMAND $<TARGET_FILE:tcc> -v)
 
+  add_executable(minicc-libtcc-api-test tests/libtcc_api_test.c)
+  target_include_directories(minicc-libtcc-api-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(minicc-libtcc-api-test PRIVATE minicc_libtcc)
+  if(MINICC_SYSTEM_LIBS)
+    target_link_libraries(minicc-libtcc-api-test PRIVATE ${MINICC_SYSTEM_LIBS})
+  endif()
+
+  foreach(_libtcc_case
+      state_lifecycle
+      error_callback_contract
+      compile_fail_no_crash
+      symbol_resolution_order
+      multi_unit_api_flow
+      define_option_flow
+      symbol_listing_contract
+      state_macro_isolation)
+    add_test(
+      NAME minicc.libtcc.${_libtcc_case}
+      COMMAND $<TARGET_FILE:minicc-libtcc-api-test> ${_libtcc_case}
+    )
+  endforeach()
+
   if(TARGET wasm32-tcc)
     find_program(MINICC_NODE_EXECUTABLE node)
     if(MINICC_NODE_EXECUTABLE)
