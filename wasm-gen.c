@@ -136,10 +136,23 @@ static int wasm_type_to_val(int t, int for_ret)
     return WASM_VAL_VOID;
 }
 
+static char *wasm_tok_strdup(int tok)
+{
+    const char *s;
+    if (tok < TOK_IDENT)
+        return NULL;
+    s = get_tok_str(tok, NULL);
+    return s ? tcc_strdup(s) : NULL;
+}
+
 ST_FUNC void tcc_wasm_reset(void)
 {
-    int i;
+    int i, j;
     for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
+        for (j = 0; j < tcc_wasm_funcs[i].nb_ops; ++j) {
+            tcc_free(tcc_wasm_funcs[i].ops[j].sym_name);
+            tcc_free(tcc_wasm_funcs[i].ops[j].call_name);
+        }
         tcc_free(tcc_wasm_funcs[i].name);
         tcc_free(tcc_wasm_funcs[i].param_types);
         tcc_free(tcc_wasm_funcs[i].param_offsets);
@@ -168,6 +181,8 @@ static WasmFuncIR *wasm_new_func(Sym *sym)
     f = &tcc_wasm_funcs[tcc_wasm_nb_funcs++];
     memset(f, 0, sizeof(*f));
     f->sym = sym;
+    f->sym_index = sym ? sym->c : 0;
+    f->sym_tok = sym ? sym->v : 0;
     f->ret_type = WASM_VAL_VOID;
     return f;
 }
@@ -249,6 +264,7 @@ static void wasm_set_addr(WasmOp *op, int fr, Sym *sym, int fc)
             op->sym = sym;
             op->sym_index = sym->c;
             op->sym_tok = sym->v;
+            op->sym_name = wasm_tok_strdup(sym->v);
         } else {
             op->flags = WASM_ADDR_ABS;
         }
@@ -351,6 +367,7 @@ ST_FUNC void load(int r, SValue *sv)
                 wo->sym = sv->sym;
                 wo->sym_index = sv->sym ? sv->sym->c : 0;
                 wo->sym_tok = sv->sym ? sv->sym->v : 0;
+                wo->sym_name = sv->sym ? wasm_tok_strdup(sv->sym->v) : NULL;
                 wo->imm = fc;
                 return;
             }
@@ -371,6 +388,7 @@ ST_FUNC void load(int r, SValue *sv)
                 wo->sym = sv->sym;
                 wo->sym_index = sv->sym ? sv->sym->c : 0;
                 wo->sym_tok = sv->sym ? sv->sym->v : 0;
+                wo->sym_name = sv->sym ? wasm_tok_strdup(sv->sym->v) : NULL;
                 wo->imm = fc;
                 return;
             }
@@ -552,6 +570,7 @@ ST_FUNC void gfunc_call(int nb_args)
         int bt = func_sym->type.t & VT_BTYPE;
         wo->sym = vtop->sym;
         wo->call_tok = vtop->sym ? vtop->sym->v : func_sym->v;
+        wo->call_name = wasm_tok_strdup(wo->call_tok);
         wo->r0 = func_reg;
         wo->call_nb_args = nb_args;
         for (i = 0; i < nb_args; ++i) {

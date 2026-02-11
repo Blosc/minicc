@@ -37,6 +37,7 @@ if(NOT _cc_rv EQUAL 0)
   message(FATAL_ERROR
     "Wasm compile failed for ${TEST_NAME}\n"
     "compiler: ${WASM_TCC}\n"
+    "exit code: ${_cc_rv}\n"
     "stdout:\n${_cc_stdout}\n"
     "stderr:\n${_cc_stderr}")
 endif()
@@ -51,6 +52,7 @@ if(NOT _node_rv EQUAL 0)
   message(FATAL_ERROR
     "Wasm run failed for ${TEST_NAME}\n"
     "node: ${NODE_EXECUTABLE}\n"
+    "exit code: ${_node_rv}\n"
     "stdout:\n${_node_stdout}\n"
     "stderr:\n${_node_stderr}")
 endif()

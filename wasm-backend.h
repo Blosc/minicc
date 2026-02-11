@@ -87,7 +87,9 @@ typedef struct WasmOp {
     Sym *sym;
     int sym_index;
     int sym_tok;
+    char *sym_name;
     int call_tok;
+    char *call_name;
     unsigned char call_nb_args;
     unsigned char call_arg_reg[WASM_MAX_CALL_ARGS];
     unsigned char call_arg_hi[WASM_MAX_CALL_ARGS];
@@ -97,6 +99,8 @@ typedef struct WasmOp {
 
 typedef struct WasmFuncIR {
     Sym *sym;
+    int sym_index;
+    int sym_tok;
     char *name;
     int start_pc;
     int end_pc;

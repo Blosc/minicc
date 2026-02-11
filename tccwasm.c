@@ -245,7 +245,7 @@ static int wasm_find_func_index_by_tok(int tok)
 {
     int i;
     for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
-        if (tcc_wasm_funcs[i].sym && tcc_wasm_funcs[i].sym->v == tok)
+        if (tcc_wasm_funcs[i].sym_tok == tok)
             return i;
     }
     return -1;
@@ -255,8 +255,7 @@ static int wasm_find_func_index_by_sym_index(int sym_index)
 {
     int i;
     for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
-        Sym *fsym = tcc_wasm_funcs[i].sym;
-        if (fsym && fsym->c == sym_index)
+        if (tcc_wasm_funcs[i].sym_index == sym_index)
             return i;
     }
     return -1;
@@ -343,94 +342,6 @@ static void wasm_store_i64_to_i32_pair(WasmBuf *b, int local_tmp64, int lo_local
     wb_local_set(b, hi_local);
 }
 
-static int wasm_sym_addr(Sym *sym, int addend)
-{
-    ElfSym *es;
-    Sym *ps;
-    const char *name = NULL;
-    int sym_index;
-    int sh;
-    int base = 0;
-
-    if (!sym)
-        return addend;
-    sym_index = sym->c;
-    es = elfsym(sym);
-    sh = es->st_shndx;
-
-    if (sh == SHN_UNDEF) {
-        int si;
-        for (ps = sym->prev_tok; ps; ps = ps->prev_tok) {
-            if (!ps->c)
-                continue;
-            es = elfsym(ps);
-            if (es->st_shndx != SHN_UNDEF) {
-                sym = ps;
-                sh = es->st_shndx;
-                break;
-            }
-        }
-        if (sh == SHN_UNDEF && sym->v >= TOK_IDENT) {
-            for (ps = sym_find(sym->v); ps; ps = ps->prev_tok) {
-                if (!ps->c)
-                    continue;
-                es = elfsym(ps);
-                if (es->st_shndx != SHN_UNDEF) {
-                    sym = ps;
-                    sh = es->st_shndx;
-                    break;
-                }
-            }
-        }
-        if (sh == SHN_UNDEF && sym->v >= TOK_IDENT) {
-            name = get_tok_str(sym->v, NULL);
-            si = wasm_find_defined_sym_index_by_name(name);
-            if (si > 0) {
-                sym_index = si;
-                es = &((ElfSym *)symtab_section->data)[si];
-                sh = es->st_shndx;
-            }
-        }
-        if (sh == SHN_UNDEF) {
-            int bt = sym->type.t & VT_BTYPE;
-            if (bt == VT_FUNC
-                || (bt == VT_PTR && sym->type.ref
-                    && (sym->type.ref->type.t & VT_BTYPE) == VT_FUNC)) {
-                return wasm_func_ptr_value_from_sym_index(sym_index, name, addend);
-            }
-        }
-        if (sh == SHN_UNDEF && (!name || !*name)) {
-            int t = sym->type.t;
-            int ro_size = wasm_sec_rodata ? (int)wasm_sec_rodata->data_offset : 0;
-            int data_size = wasm_sec_data ? (int)wasm_sec_data->data_offset : 0;
-            int bss_size = wasm_sec_bss ? (int)wasm_sec_bss->data_offset : 0;
-            if ((t & VT_STATIC) && (((t & VT_BTYPE) == VT_PTR) || (t & VT_ARRAY))) {
-                if (addend >= 0 && addend < ro_size)
-                    return wasm_layout.rodata_base + addend;
-                if (addend >= 0 && addend < data_size)
-                    return wasm_layout.data_base + addend;
-                if (addend >= 0 && addend < bss_size)
-                    return wasm_layout.bss_base + addend;
-            }
-        }
-    }
-    if (sh == SHN_UNDEF)
-        tcc_error("wasm32 backend: unresolved symbol (tok=%d)", sym->v);
-
-    if (wasm_sec_rodata && sh == wasm_sec_rodata->sh_num)
-        base = wasm_layout.rodata_base;
-    else if (wasm_sec_data && sh == wasm_sec_data->sh_num)
-        base = wasm_layout.data_base;
-    else if (wasm_sec_bss && sh == wasm_sec_bss->sh_num)
-        base = wasm_layout.bss_base;
-    else if (wasm_sec_text && sh == wasm_sec_text->sh_num)
-        return wasm_func_ptr_value_from_sym_index(sym_index, name, addend);
-    else
-        tcc_error("wasm32 backend: unsupported symbol section for '%s'", get_tok_str(sym->v, NULL));
-
-    return base + (int)es->st_value + addend;
-}
-
 static int wasm_sym_addr_from_elfsym(int sym_index, int addend)
 {
     ElfSym *es;
@@ -473,14 +384,14 @@ static int wasm_sym_addr_from_elfsym(int sym_index, int addend)
     return base + (int)es->st_value + addend;
 }
 
-static int wasm_sym_addr_from_tok(int tok, int addend)
+static int wasm_sym_addr_from_tok(int tok, const char *name, int addend)
 {
-    const char *name;
     int si;
 
     if (tok < TOK_IDENT)
         return addend;
-    name = get_tok_str(tok, NULL);
+    if (!name || !*name)
+        tcc_error("wasm32 backend: unresolved symbol token %d", tok);
     si = wasm_find_defined_sym_index_by_name(name);
     if (si > 0)
         return wasm_sym_addr_from_elfsym(si, addend);
@@ -492,8 +403,9 @@ static int wasm_sym_addr_from_op(WasmOp *op)
     if (op->sym_index > 0)
         return wasm_sym_addr_from_elfsym(op->sym_index, op->imm);
     if (op->sym_tok >= TOK_IDENT)
-        return wasm_sym_addr_from_tok(op->sym_tok, op->imm);
-    return wasm_sym_addr(op->sym, op->imm);
+        return wasm_sym_addr_from_tok(op->sym_tok, op->sym_name, op->imm);
+    tcc_error("wasm32 backend: unresolved symbol reference in IR");
+    return 0;
 }
 
 static void wasm_apply_data_relocs(Section *s)
@@ -632,7 +544,7 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
     case TOK___moddi3:
     case TOK___umoddi3:
         if (op->call_nb_args != 2)
-            tcc_error("wasm32 backend: invalid helper arity for %s", get_tok_str(tok, NULL));
+            tcc_error("wasm32 backend: invalid helper arity for token %d", tok);
         wasm_emit_call_arg(b, op, 0, local_fp, local_i0, local_f0);
         wasm_emit_call_arg(b, op, 1, local_fp, local_i0, local_f0);
         if (tok == TOK___divdi3) wb_u8(b, 0x7f);      /* i64.div_s */
@@ -648,7 +560,7 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
     case TOK___lshrdi3:
     case TOK___ashrdi3:
         if (op->call_nb_args != 2)
-            tcc_error("wasm32 backend: invalid helper arity for %s", get_tok_str(tok, NULL));
+            tcc_error("wasm32 backend: invalid helper arity for token %d", tok);
         wasm_emit_call_arg(b, op, 0, local_fp, local_i0, local_f0); /* i64 */
         wasm_emit_call_arg(b, op, 1, local_fp, local_i0, local_f0); /* i32 */
         if (op->call_arg_type[1] != WASM_VAL_I64)
@@ -663,7 +575,7 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
 
     case TOK___floatundisf:
         if (op->call_nb_args != 1)
-            tcc_error("wasm32 backend: invalid helper arity for %s", get_tok_str(tok, NULL));
+            tcc_error("wasm32 backend: invalid helper arity for token %d", tok);
         wasm_emit_call_arg(b, op, 0, local_fp, local_i0, local_f0);
         wb_u8(b, 0xb5); /* f32.convert_i64_u */
         wb_u8(b, 0xbb); /* f64.promote_f32 */
@@ -673,7 +585,7 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
     case TOK___floatundidf:
     case TOK___floatundixf:
         if (op->call_nb_args != 1)
-            tcc_error("wasm32 backend: invalid helper arity for %s", get_tok_str(tok, NULL));
+            tcc_error("wasm32 backend: invalid helper arity for token %d", tok);
         wasm_emit_call_arg(b, op, 0, local_fp, local_i0, local_f0);
         wb_u8(b, 0xba); /* f64.convert_i64_u */
         wb_local_set(b, wasm_f64_reg_local(REG_FRET, local_f0));
@@ -683,7 +595,7 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
     case TOK___fixunsdfdi:
     case TOK___fixunsxfdi:
         if (op->call_nb_args != 1)
-            tcc_error("wasm32 backend: invalid helper arity for %s", get_tok_str(tok, NULL));
+            tcc_error("wasm32 backend: invalid helper arity for token %d", tok);
         if (tok == TOK___fixunssfdi && op->call_arg_type[0] == WASM_VAL_F32) {
             wasm_emit_call_arg(b, op, 0, local_fp, local_i0, local_f0);
             wb_u8(b, 0xaf); /* i64.trunc_f32_u */
@@ -1031,8 +943,9 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
             } else {
                 libcall_done = wasm_emit_libcall(b, op, local_fp, local_i0, local_f0, local_tmp64);
                 if (!libcall_done) {
-                    tcc_error("wasm32 backend: unresolved direct call '%s'",
-                              get_tok_str(op->call_tok, NULL));
+                    if (op->call_name && *op->call_name)
+                        tcc_error("wasm32 backend: unresolved direct call '%s'", op->call_name);
+                    tcc_error("wasm32 backend: unresolved direct call token %d", op->call_tok);
                 }
             }
         } else {
