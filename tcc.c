@@ -191,9 +191,13 @@ static const char version[] =
         "AArch64"
 #elif defined TCC_TARGET_RISCV64
         "riscv64"
+#elif defined TCC_TARGET_WASM32
+        "wasm32"
 #endif
 #ifdef TCC_TARGET_PE
         " Windows"
+#elif defined TCC_TARGET_WASM32
+        " freestanding"
 #elif defined(TCC_TARGET_MACHO)
         " Darwin"
 #elif TARGETOS_FreeBSD || TARGETOS_FreeBSD_kernel

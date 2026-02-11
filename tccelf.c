@@ -61,6 +61,10 @@ ST_FUNC void tccelf_new(TCCState *s)
 {
     TCCState *s1 = s;
 
+#ifdef TCC_TARGET_WASM32
+    tcc_wasm_reset();
+#endif
+
     /* no section zero */
     dynarray_add(&s->sections, &s->nb_sections, NULL);
 
@@ -1059,6 +1063,28 @@ static void update_gnu_hash(TCCState *s1, Section *gnu_hash)
 
 /* relocate symbol table, resolve undefined symbols if do_resolve is
    true and output error if undefined symbol. */
+#if defined TCC_IS_NATIVE && !defined TCC_TARGET_PE && !defined _WIN32
+static void *tcc_dlsym_self(const char *name)
+{
+    static void *self_handle;
+
+    if (!self_handle) {
+        Dl_info info;
+        if (dladdr((void *)(uintptr_t)&tcc_new, &info) && info.dli_fname) {
+#ifdef RTLD_NOLOAD
+            self_handle = dlopen(info.dli_fname, RTLD_LAZY | RTLD_LOCAL | RTLD_NOLOAD);
+            if (!self_handle)
+#endif
+                self_handle = dlopen(info.dli_fname, RTLD_LAZY | RTLD_LOCAL);
+        }
+    }
+
+    if (!self_handle)
+        return NULL;
+    return dlsym(self_handle, name);
+}
+#endif
+
 ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
 {
     ElfW(Sym) *sym;
@@ -1079,6 +1105,10 @@ ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
                 void *addr = NULL;
                 if (!s1->nostdlib)
                     addr = dlsym(RTLD_DEFAULT, name_ud);
+# ifndef _WIN32
+                if (addr == NULL)
+                    addr = tcc_dlsym_self(name_ud);
+# endif
 		if (addr == NULL) {
 		    int i;
 		    for (i = 0; i < s1->nb_loaded_dlls; i++)
@@ -3121,6 +3151,10 @@ LIBTCCAPI int tcc_output_file(TCCState *s, const char *filename)
     s->nb_errors = 0;
     if (s->test_coverage)
         tcc_tcov_add_file(s, filename);
+#ifdef TCC_TARGET_WASM32
+    if (s->output_format == TCC_OUTPUT_FORMAT_WASM)
+        return tcc_output_wasm(s, filename);
+#endif
     if (s->output_type == TCC_OUTPUT_OBJ)
         return elf_output_obj(s, filename);
 #ifdef TCC_TARGET_PE

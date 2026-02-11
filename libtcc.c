@@ -53,6 +53,10 @@
 #include "riscv64-gen.c"
 #include "riscv64-link.c"
 #include "riscv64-asm.c"
+#elif defined(TCC_TARGET_WASM32)
+#include "wasm-gen.c"
+#include "wasm-link.c"
+#include "tccwasm.c"
 #else
 #error unknown target
 #endif
@@ -986,10 +990,18 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
 
     /* add sections */
     tccelf_new(s);
+#ifdef TCC_TARGET_WASM32
+    if (s->output_format == TCC_OUTPUT_FORMAT_ELF)
+        s->output_format = TCC_OUTPUT_FORMAT_WASM;
+#endif
 
     if (output_type == TCC_OUTPUT_OBJ) {
-        /* always elf for objects */
+        /* object container is target specific */
+#ifdef TCC_TARGET_WASM32
+        s->output_format = TCC_OUTPUT_FORMAT_WASM;
+#else
         s->output_format = TCC_OUTPUT_FORMAT_ELF;
+#endif
         return 0;
     }
 
@@ -1450,6 +1462,10 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
             else if (0==strcmp("coff", o.arg))
                 s->output_format = TCC_OUTPUT_FORMAT_COFF;
 #endif
+#if defined TCC_TARGET_WASM32
+            else if (0==strcmp("wasm", o.arg) || 0==strcmp("wasm32", o.arg))
+                s->output_format = TCC_OUTPUT_FORMAT_WASM;
+#endif
             else
                 goto err;
         } else if (link_option(&o, "export-all-symbols")
@@ -1783,10 +1799,14 @@ static const char dumpmachine_str[] =
     "aarch64"
 #elif defined TCC_TARGET_RISCV64
     "riscv64"
+#elif defined TCC_TARGET_WASM32
+    "wasm32"
 #endif
     "-"
 #ifdef TCC_TARGET_PE
     "mingw32"
+#elif defined(TCC_TARGET_WASM32)
+    "unknown"
 #elif defined(TCC_TARGET_MACHO)
     "apple-darwin"
 #elif TARGETOS_FreeBSD || TARGETOS_FreeBSD_kernel
