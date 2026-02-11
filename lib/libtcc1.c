@@ -37,10 +37,6 @@ typedef unsigned int USItype;
 typedef long long DWtype;
 typedef unsigned long long UDWtype;
 
-#if defined(_WIN64) && defined(_MSC_VER)
-#include <intrin.h>
-#endif
-
 struct DWstruct {
     Wtype low, high;
 };
@@ -652,15 +648,11 @@ long long __fixxfdi (long double a1)
 }
 #endif /* !ARM */
 
-#if defined _WIN64
-/* MSVC x64 intrinsic */
+#if defined(_WIN64) && !defined(_MSC_VER)
+/* Fallback helper for GNU-like Windows compilers.
+   MSVC/clang-cl provide __faststorefence as an intrinsic/builtin. */
 void __faststorefence(void)
 {
-#if defined(_MSC_VER)
-    __declspec(align(16)) static volatile long _minicc_sfence_word;
-    _InterlockedOr((volatile long *)&_minicc_sfence_word, 0);
-#else
     __asm__("lock; orl $0,(%rsp)");
-#endif
 }
 #endif
