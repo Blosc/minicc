@@ -287,6 +287,16 @@ if(MINICC_ENABLE_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunWasmTest.cmake
         )
       endforeach()
+
+      add_test(
+        NAME minicc.wasm.unresolved_call
+        COMMAND ${CMAKE_COMMAND}
+          -DTEST_NAME=unresolved_call
+          -DWASM_TCC=$<TARGET_FILE:wasm32-tcc>
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunWasmCompileFailTest.cmake
+      )
     endif()
   endif()
 endif()
