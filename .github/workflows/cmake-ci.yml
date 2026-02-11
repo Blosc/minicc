@@ -22,7 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure (Windows, clang-cl)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DMINICC_BUILD_SHARED_LIBTCC=ON -DMINICC_BUILD_WASM32_TCC=OFF -DMINICC_ENABLE_TESTING=ON
+
       - name: Configure
+        if: runner.os != 'Windows'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DMINICC_BUILD_SHARED_LIBTCC=ON -DMINICC_BUILD_WASM32_TCC=OFF -DMINICC_ENABLE_TESTING=ON
 
       - name: Build
