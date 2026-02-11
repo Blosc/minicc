@@ -51,6 +51,28 @@ typedef long double XFtype;
 #define WORD_SIZE (sizeof (Wtype) * BITS_PER_UNIT)
 #define HIGH_WORD_COEFF (((UDWtype) 1) << WORD_SIZE)
 
+/* Normalize architecture macros for MSVC-style toolchains (cl/clang-cl). */
+#if defined(_M_X64) || defined(_M_AMD64)
+# ifndef __x86_64__
+#  define __x86_64__ 1
+# endif
+#endif
+#if defined(_M_IX86)
+# ifndef __i386__
+#  define __i386__ 1
+# endif
+#endif
+#if defined(_M_ARM64)
+# ifndef __aarch64__
+#  define __aarch64__ 1
+# endif
+#endif
+#if defined(_M_ARM)
+# ifndef __arm__
+#  define __arm__ 1
+# endif
+#endif
+
 /* the following deal with IEEE single-precision numbers */
 #define EXCESS		126
 #define SIGNBIT		0x80000000
@@ -626,8 +648,9 @@ long long __fixxfdi (long double a1)
 }
 #endif /* !ARM */
 
-#if defined _WIN64
-/* MSVC x64 intrinsic */
+#if defined(_WIN64) && !defined(_MSC_VER)
+/* Fallback helper for GNU-like Windows compilers.
+   MSVC/clang-cl provide __faststorefence as an intrinsic/builtin. */
 void __faststorefence(void)
 {
     __asm__("lock; orl $0,(%rsp)");

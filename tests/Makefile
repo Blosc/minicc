@@ -23,6 +23,13 @@ TESTS = \
  dlltest \
  cross-test
 
+HAVE_NODE := $(shell command -v node >/dev/null 2>&1 && echo yes)
+ifneq ($(wildcard $(TOP)/wasm32-tcc),)
+ifneq ($(HAVE_NODE),)
+ TESTS += wasm-dir
+endif
+endif
+
 # test4_static -- Not all relocation types are implemented yet.
 # asmtest / asmtest2 -- minor differences with gcc
 
@@ -346,4 +353,4 @@ clean:
 	rm -f ex? tcc_g weaktest.*.txt *.def *.pdb *.obj libtcc_test_mt
 	@$(MAKE) -C tests2 $@
 	@$(MAKE) -C pp $@
-
+	@$(MAKE) -C wasm $@

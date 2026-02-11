@@ -23,7 +23,7 @@
 
 #define _GNU_SOURCE
 #define _DARWIN_C_SOURCE
-#include "config.h"
+#include <config.h>
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -149,11 +149,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 /* #define TCC_TARGET_ARM64  *//* ARMv8 code generator */
 /* #define TCC_TARGET_C67    *//* TMS320C67xx code generator */
 /* #define TCC_TARGET_RISCV64 *//* risc-v code generator */
+/* #define TCC_TARGET_WASM32 *//* wasm32 code generator */
 
 /* default target is I386 */
 #if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_ARM) && \
     !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_C67) && \
-    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64)
+    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64) && \
+    !defined(TCC_TARGET_WASM32)
 # if defined __x86_64__
 #  define TCC_TARGET_X86_64
 # elif defined __arm__
@@ -165,6 +167,8 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #  define TCC_TARGET_ARM64
 # elif defined __riscv
 #  define TCC_TARGET_RISCV64
+# elif defined __wasm32__
+#  define TCC_TARGET_WASM32
 # else
 #  define TCC_TARGET_I386
 # endif
@@ -215,7 +219,7 @@ extern long double strtold (const char *__nptr, char **__endptr);
     || defined TARGETOS_NetBSD \
     || defined TARGETOS_FreeBSD_kernel
 # define TARGETOS_BSD 1
-#elif !(defined TCC_TARGET_PE || defined TCC_TARGET_MACHO)
+#elif !(defined TCC_TARGET_PE || defined TCC_TARGET_MACHO || defined TCC_TARGET_WASM32)
 # define TARGETOS_Linux 1 /* for tccdefs_.h */
 #endif
 
@@ -309,6 +313,8 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #  define CONFIG_TCC_ELFINTERP "/lib64/ld-linux-x86-64.so.2"
 # elif defined(TCC_TARGET_RISCV64)
 #  define CONFIG_TCC_ELFINTERP "/lib/ld-linux-riscv64-lp64d.so.1"
+# elif defined(TCC_TARGET_WASM32)
+#  define CONFIG_TCC_ELFINTERP "-"
 # elif defined(TCC_ARM_EABI)
 #  define DEFAULT_ELFINTERP(s) default_elfinterp(s)
 # else
@@ -395,6 +401,9 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # include "riscv64-gen.c"
 # include "riscv64-link.c"
 # include "riscv64-asm.c"
+#elif defined(TCC_TARGET_WASM32)
+# include "wasm-gen.c"
+# include "wasm-link.c"
 #else
 #error unknown target
 #endif
@@ -1524,6 +1533,7 @@ ST_FUNC Sym *gfunc_set_param(Sym *s, int c, int byref);
 #define TCC_OUTPUT_FORMAT_ELF    0 /* default output format: ELF */
 #define TCC_OUTPUT_FORMAT_BINARY 1 /* binary image output */
 #define TCC_OUTPUT_FORMAT_COFF   2 /* COFF */
+#define TCC_OUTPUT_FORMAT_WASM   3 /* WebAssembly module */
 #define TCC_OUTPUT_DYN           TCC_OUTPUT_DLL
 
 #define ARMAG  "!<arch>\n"    /* For COFF and a.out archives */
@@ -1731,6 +1741,8 @@ ST_FUNC void gen_increment_tcov (SValue *sv);
 ST_FUNC int tcc_output_coff(TCCState *s1, FILE *f);
 ST_FUNC int tcc_load_coff(TCCState * s1, int fd);
 #endif
+ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename);
+ST_FUNC void tcc_wasm_reset(void);
 
 /* ------------ tccasm.c ------------ */
 ST_FUNC void asm_instr(void);

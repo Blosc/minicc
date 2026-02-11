@@ -1,0 +1,64 @@
+name: CMake Build and Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: build+test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    env:
+      BUILD_CONFIG: Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Windows, clang-cl)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DMINICC_BUILD_SHARED_LIBTCC=ON -DMINICC_BUILD_WASM32_TCC=OFF -DMINICC_ENABLE_TESTING=ON
+
+      - name: Configure
+        if: runner.os != 'Windows'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DMINICC_BUILD_SHARED_LIBTCC=ON -DMINICC_BUILD_WASM32_TCC=OFF -DMINICC_ENABLE_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_CONFIG }} --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build -C ${{ env.BUILD_CONFIG }} --output-on-failure
+
+  wasm-backend:
+    name: wasm backend (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUILD_CONFIG: Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Configure (wasm enabled)
+        run: cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DMINICC_BUILD_SHARED_LIBTCC=ON -DMINICC_BUILD_WASM32_TCC=ON -DMINICC_ENABLE_TESTING=ON
+
+      - name: Build (wasm enabled)
+        run: cmake --build build-wasm --config ${{ env.BUILD_CONFIG }} --parallel
+
+      - name: Verify wasm tests are discovered
+        run: |
+          ctest --test-dir build-wasm -N
+          ctest --test-dir build-wasm -N | grep -q "minicc.wasm."
+
+      - name: Run wasm backend tests
+        run: ctest --test-dir build-wasm -C ${{ env.BUILD_CONFIG }} -R "^minicc\\.wasm\\." --output-on-failure
