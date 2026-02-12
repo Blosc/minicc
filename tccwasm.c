@@ -615,7 +615,8 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
 static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
                            int case_index, int loop_depth,
                            int local_pc, int local_fp, int local_cmp, int local_carry,
-                           int local_i0, int local_f0, int local_tmp64)
+                           int local_i0, int local_f0, int local_tmp64,
+                           int *op_to_block, int nb_blocks, int emit_dispatch)
 {
     int next_index = case_index + 1;
     int dst, src, target_index;
@@ -854,7 +855,12 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
 
     case WASM_OP_JMP:
         target_index = wasm_pc_to_index(f, op->target_pc);
-        wb_i32_const(b, target_index);
+        if (op_to_block) {
+            int bi = (target_index < f->nb_ops) ? op_to_block[target_index] : nb_blocks;
+            wb_i32_const(b, bi);
+        } else {
+            wb_i32_const(b, target_index);
+        }
         wb_local_set(b, local_pc);
         wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         return;
@@ -865,9 +871,17 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         if (op->flags & WASM_OP_FLAG_INVERT)
             wb_u8(b, 0x45);
         wb_u8(b, 0x04), wb_u8(b, 0x7f); /* if (result i32) */
-        wb_i32_const(b, target_index);
-        wb_u8(b, 0x05); /* else */
-        wb_i32_const(b, next_index);
+        if (op_to_block) {
+            int bi = (target_index < f->nb_ops) ? op_to_block[target_index] : nb_blocks;
+            int next_bi = (next_index < f->nb_ops) ? op_to_block[next_index] : nb_blocks;
+            wb_i32_const(b, bi);
+            wb_u8(b, 0x05); /* else */
+            wb_i32_const(b, next_bi);
+        } else {
+            wb_i32_const(b, target_index);
+            wb_u8(b, 0x05); /* else */
+            wb_i32_const(b, next_index);
+        }
         wb_u8(b, 0x0b); /* end */
         wb_local_set(b, local_pc);
         wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
@@ -975,7 +989,7 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
     }
 
     case WASM_OP_RET:
-        wb_i32_const(b, f->nb_ops);
+        wb_i32_const(b, op_to_block ? nb_blocks : f->nb_ops);
         wb_local_set(b, local_pc);
         wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         return;
@@ -985,9 +999,18 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         break;
     }
 
-    wb_i32_const(b, next_index);
-    wb_local_set(b, local_pc);
-    wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+    if (emit_dispatch) {
+        int dispatch_target;
+        if (op_to_block && next_index < f->nb_ops)
+            dispatch_target = op_to_block[next_index];
+        else if (op_to_block)
+            dispatch_target = nb_blocks;
+        else
+            dispatch_target = next_index;
+        wb_i32_const(b, dispatch_target);
+        wb_local_set(b, local_pc);
+        wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+    }
 }
 
 static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
@@ -1048,32 +1071,91 @@ static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
     }
 
     if (f->nb_ops > 0) {
+        /* --- Basic block coalescing ---
+         * Identify basic block leaders and merge consecutive non-branching
+         * ops into single br_table cases to reduce dispatch overhead. */
+        int *is_leader = tcc_mallocz(f->nb_ops * sizeof(int));
+        int *op_to_block = tcc_mallocz(f->nb_ops * sizeof(int));
+        int *block_start; /* first op index of each block */
+        int *block_end;   /* one past last op index of each block */
+        int nb_blocks = 0, b_idx;
+
+        /* 1. Identify basic block leaders */
+        is_leader[0] = 1;
+        for (i = 0; i < f->nb_ops; i++) {
+            WasmOp *op = &f->ops[i];
+            if (op->kind == WASM_OP_JMP || op->kind == WASM_OP_JMP_CMP) {
+                int target = wasm_pc_to_index(f, op->target_pc);
+                if (target >= 0 && target < f->nb_ops)
+                    is_leader[target] = 1;
+                if (i + 1 < f->nb_ops)
+                    is_leader[i + 1] = 1;
+            } else if (op->kind == WASM_OP_RET) {
+                if (i + 1 < f->nb_ops)
+                    is_leader[i + 1] = 1;
+            }
+        }
+
+        /* 2. Assign block indices */
+        for (i = 0; i < f->nb_ops; i++) {
+            if (is_leader[i]) nb_blocks++;
+            op_to_block[i] = nb_blocks - 1;
+        }
+
+        block_start = tcc_mallocz(nb_blocks * sizeof(int));
+        block_end = tcc_mallocz(nb_blocks * sizeof(int));
+        b_idx = -1;
+        for (i = 0; i < f->nb_ops; i++) {
+            if (is_leader[i]) {
+                b_idx++;
+                block_start[b_idx] = i;
+            }
+            block_end[b_idx] = i + 1;
+        }
+
+        tcc_free(is_leader);
+
+        /* 3. Emit dispatch structure with nb_blocks cases */
         wb_i32_const(&body, 0);
         wb_local_set(&body, local_pc);
 
         wb_u8(&body, 0x03), wb_u8(&body, 0x40); /* loop */
         wb_u8(&body, 0x02), wb_u8(&body, 0x40); /* halt block */
 
-        for (i = 0; i < f->nb_ops; ++i)
+        for (i = 0; i < nb_blocks; ++i)
             wb_u8(&body, 0x02), wb_u8(&body, 0x40);
 
         wb_local_get(&body, local_pc);
         wb_u8(&body, 0x0e);
-        wb_uleb(&body, f->nb_ops);
-        for (i = 0; i < f->nb_ops; ++i)
-            wb_uleb(&body, f->nb_ops - 1 - i);
-        wb_uleb(&body, f->nb_ops); /* default -> halt block */
+        wb_uleb(&body, nb_blocks);
+        for (i = 0; i < nb_blocks; ++i)
+            wb_uleb(&body, nb_blocks - 1 - i);
+        wb_uleb(&body, nb_blocks); /* default -> halt block */
 
-        for (i = f->nb_ops - 1; i >= 0; --i) {
-            wb_u8(&body, 0x0b); /* end block i */
-            wasm_emit_case(&body, f, &f->ops[i], i, i + 1,
-                           local_pc, local_fp, local_cmp, local_carry,
-                           local_i0, local_f0, local_tmp64);
+        /* 4. Emit blocks in reverse order */
+        for (b_idx = nb_blocks - 1; b_idx >= 0; --b_idx) {
+            int j;
+            wb_u8(&body, 0x0b); /* end block b_idx */
+            for (j = block_start[b_idx]; j < block_end[b_idx]; ++j) {
+                int is_last = (j == block_end[b_idx] - 1);
+                /* loop_depth: distance from this block's position to the
+                 * loop header.  With nb_blocks blocks + halt block, the
+                 * loop is at depth b_idx + 1. */
+                wasm_emit_case(&body, f, &f->ops[j], j, b_idx + 1,
+                               local_pc, local_fp, local_cmp, local_carry,
+                               local_i0, local_f0, local_tmp64,
+                               op_to_block, nb_blocks, is_last);
+                if (s1->nb_errors) break;
+            }
             if (s1->nb_errors) break;
         }
 
         wb_u8(&body, 0x0b); /* end halt block */
         wb_u8(&body, 0x0b); /* end loop */
+
+        tcc_free(op_to_block);
+        tcc_free(block_start);
+        tcc_free(block_end);
     }
 
     if (s1->nb_errors) {
