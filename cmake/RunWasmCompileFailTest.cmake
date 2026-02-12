@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-foreach(_req TEST_NAME WASM_TCC SOURCE_DIR BINARY_DIR)
+foreach(_req TEST_NAME WASM_TCC SOURCE_DIR BINARY_DIR NODE_EXECUTABLE)
   if(NOT DEFINED ${_req} OR "${${_req}}" STREQUAL "")
     message(FATAL_ERROR "RunWasmCompileFailTest.cmake: missing required -D${_req}=...")
   endif()
@@ -24,17 +24,27 @@ execute_process(
   ERROR_VARIABLE _cc_stderr
 )
 
-if(_cc_rv EQUAL 0)
+if(NOT _cc_rv EQUAL 0)
   message(FATAL_ERROR
-    "Expected wasm compile to fail for ${TEST_NAME}, but it succeeded.\n"
+    "Expected wasm compile to succeed for ${TEST_NAME}, but it failed.\n"
+    "exit code: ${_cc_rv}\n"
     "stdout:\n${_cc_stdout}\n"
     "stderr:\n${_cc_stderr}")
 endif()
 
-if(NOT _cc_stderr MATCHES "unresolved direct call")
+execute_process(
+  COMMAND "${NODE_EXECUTABLE}" -e
+    "const fs=require('fs');const p=process.argv[1];const m=new WebAssembly.Module(fs.readFileSync(p));const imports=WebAssembly.Module.imports(m);const ok=imports.some(i=>i.kind==='function'&&i.module==='env'&&i.name==='missing');if(!ok){console.error(JSON.stringify(imports));process.exit(2);}"
+    "${_out_wasm}"
+  RESULT_VARIABLE _node_rv
+  OUTPUT_VARIABLE _node_stdout
+  ERROR_VARIABLE _node_stderr
+)
+
+if(NOT _node_rv EQUAL 0)
   message(FATAL_ERROR
-    "Expected unresolved direct call diagnostic for ${TEST_NAME}.\n"
-    "exit code: ${_cc_rv}\n"
-    "stdout:\n${_cc_stdout}\n"
-    "stderr:\n${_cc_stderr}")
+    "Expected wasm import env.missing for ${TEST_NAME}.\n"
+    "node exit code: ${_node_rv}\n"
+    "stdout:\n${_node_stdout}\n"
+    "stderr:\n${_node_stderr}")
 endif()
