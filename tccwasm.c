@@ -31,6 +31,18 @@ typedef struct WasmSig {
     unsigned char param_types[WASM_MAX_CALL_ARGS];
 } WasmSig;
 
+typedef struct WasmImportFunc {
+    char *name;
+    WasmSig sig;
+    int type_index;
+} WasmImportFunc;
+
+static WasmImportFunc *wasm_import_funcs;
+static int wasm_nb_import_funcs;
+static int wasm_cap_import_funcs;
+
+static int wasm_find_import_index_by_name(const char *name);
+
 static int wasm_align_up(int v, int a)
 {
     return (v + a - 1) & -a;
@@ -308,15 +320,21 @@ static int wasm_find_defined_sym_index_by_name(const char *name)
 static int wasm_func_ptr_value_from_sym_index(int sym_index, const char *name, int addend)
 {
     int fi;
+    int ii;
     if (addend)
         tcc_error("wasm32 backend: function pointer arithmetic is not supported");
     fi = wasm_find_func_index_by_sym_index(sym_index);
     if (fi < 0)
         fi = wasm_find_func_index_by_name(name);
+    if (fi >= 0)
+        return fi + 1; /* keep table index 0 as null */
+    ii = wasm_find_import_index_by_name(name);
+    if (ii >= 0)
+        return tcc_wasm_nb_funcs + ii + 1; /* imported funcs follow defined funcs in table */
     if (fi < 0)
         tcc_error("wasm32 backend: unresolved function symbol '%s'",
                   name ? name : "?");
-    return fi + 1; /* keep table index 0 as null */
+    return 1;
 }
 
 static void wasm_push_i64_from_i32_pair(WasmBuf *b, int lo_local, int hi_local)
@@ -445,18 +463,174 @@ static void wasm_apply_data_relocs(Section *s)
     }
 }
 
-static int wasm_sig_matches_func(WasmSig *sig, WasmFuncIR *f)
+static int wasm_sig_matches_func(const WasmSig *sig, const WasmFuncIR *f)
 {
     if (sig->ret_type != f->ret_type || sig->nb_params != f->nb_params)
         return 0;
     return !memcmp(sig->param_types, f->param_types, f->nb_params);
 }
 
-static int wasm_sig_matches_op(WasmSig *sig, WasmOp *op)
+static int wasm_sig_matches_sig(const WasmSig *a, const WasmSig *b)
 {
-    if (sig->ret_type != op->type || sig->nb_params != op->call_nb_args)
+    if (a->ret_type != b->ret_type || a->nb_params != b->nb_params)
         return 0;
-    return !memcmp(sig->param_types, op->call_arg_type, op->call_nb_args);
+    return !memcmp(a->param_types, b->param_types, a->nb_params);
+}
+
+static void wasm_sig_from_call(WasmSig *sig, WasmOp *op)
+{
+    sig->ret_type = op->type;
+    sig->nb_params = op->call_nb_args;
+    memcpy(sig->param_types, op->call_arg_type, op->call_nb_args);
+}
+
+static int wasm_find_or_add_type_index(const WasmSig *wanted,
+                                       WasmSig **extra_sigs,
+                                       int *cap_extra_sigs,
+                                       int *nb_extra_sigs)
+{
+    int j;
+    for (j = 0; j < tcc_wasm_nb_funcs; ++j) {
+        WasmFuncIR *g = &tcc_wasm_funcs[j];
+        if (g->nb_params <= WASM_MAX_CALL_ARGS && wasm_sig_matches_func(wanted, g))
+            return j;
+    }
+    for (j = 0; j < *nb_extra_sigs; ++j) {
+        if (wasm_sig_matches_sig(wanted, &(*extra_sigs)[j]))
+            return tcc_wasm_nb_funcs + j;
+    }
+    if (*nb_extra_sigs >= *cap_extra_sigs) {
+        int n = *cap_extra_sigs ? (*cap_extra_sigs * 2) : 8;
+        WasmSig *next = tcc_realloc(*extra_sigs, n * sizeof(*next));
+        if (!next) {
+            tcc_error_noabort("wasm32 backend: out of memory while growing type signatures");
+            return -1;
+        }
+        *extra_sigs = next;
+        *cap_extra_sigs = n;
+    }
+    (*extra_sigs)[*nb_extra_sigs] = *wanted;
+    j = *nb_extra_sigs;
+    (*nb_extra_sigs)++;
+    return tcc_wasm_nb_funcs + j;
+}
+
+static int wasm_find_import_index_by_name(const char *name)
+{
+    int i;
+    if (!name || !*name)
+        return -1;
+    for (i = 0; i < wasm_nb_import_funcs; ++i) {
+        if (!strcmp(wasm_import_funcs[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+static void wasm_free_imports(void)
+{
+    int i;
+    for (i = 0; i < wasm_nb_import_funcs; ++i)
+        tcc_free(wasm_import_funcs[i].name);
+    tcc_free(wasm_import_funcs);
+    wasm_import_funcs = NULL;
+    wasm_nb_import_funcs = 0;
+    wasm_cap_import_funcs = 0;
+}
+
+static int wasm_find_or_add_import(const char *name, const WasmSig *sig, int type_index)
+{
+    int i = wasm_find_import_index_by_name(name);
+    if (i >= 0) {
+        if (!wasm_sig_matches_sig(&wasm_import_funcs[i].sig, sig)) {
+            tcc_error_noabort("wasm32 backend: conflicting signatures for import '%s'", name);
+            return -1;
+        }
+        return i;
+    }
+    if (wasm_nb_import_funcs >= wasm_cap_import_funcs) {
+        int n = wasm_cap_import_funcs ? (wasm_cap_import_funcs * 2) : 8;
+        WasmImportFunc *next = tcc_realloc(wasm_import_funcs, n * sizeof(*next));
+        if (!next) {
+            tcc_error_noabort("wasm32 backend: out of memory while growing import table");
+            return -1;
+        }
+        wasm_import_funcs = next;
+        wasm_cap_import_funcs = n;
+    }
+    i = wasm_nb_import_funcs++;
+    wasm_import_funcs[i].name = tcc_strdup(name);
+    if (!wasm_import_funcs[i].name) {
+        tcc_error_noabort("wasm32 backend: out of memory while copying import name");
+        return -1;
+    }
+    wasm_import_funcs[i].sig = *sig;
+    wasm_import_funcs[i].type_index = type_index;
+    return i;
+}
+
+static int wasm_is_libcall_token(int tok)
+{
+    switch (tok) {
+    case TOK___divdi3:
+    case TOK___udivdi3:
+    case TOK___moddi3:
+    case TOK___umoddi3:
+    case TOK___ashldi3:
+    case TOK___lshrdi3:
+    case TOK___ashrdi3:
+    case TOK___floatundisf:
+    case TOK___floatundidf:
+    case TOK___floatundixf:
+    case TOK___fixunssfdi:
+    case TOK___fixunsdfdi:
+    case TOK___fixunsxfdi:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int wasm_collect_call_metadata(WasmSig **extra_sigs,
+                                      int *cap_extra_sigs,
+                                      int *nb_extra_sigs,
+                                      int *has_indirect_calls)
+{
+    int i, k;
+    for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
+        WasmFuncIR *f = &tcc_wasm_funcs[i];
+        for (k = 0; k < f->nb_ops; ++k) {
+            WasmOp *op = &f->ops[k];
+            WasmSig wanted;
+            int ti;
+            if (op->kind == WASM_OP_CALL_INDIRECT) {
+                *has_indirect_calls = 1;
+                wasm_sig_from_call(&wanted, op);
+                ti = wasm_find_or_add_type_index(&wanted, extra_sigs, cap_extra_sigs, nb_extra_sigs);
+                if (ti < 0)
+                    return -1;
+                op->imm = ti;
+                continue;
+            }
+            if (op->kind != WASM_OP_CALL)
+                continue;
+            if (wasm_find_func_index_by_tok(op->call_tok) >= 0)
+                continue;
+            if (wasm_is_libcall_token(op->call_tok))
+                continue;
+            if (!op->call_name || !*op->call_name) {
+                tcc_error_noabort("wasm32 backend: unresolved direct call token %d", op->call_tok);
+                return -1;
+            }
+            wasm_sig_from_call(&wanted, op);
+            ti = wasm_find_or_add_type_index(&wanted, extra_sigs, cap_extra_sigs, nb_extra_sigs);
+            if (ti < 0)
+                return -1;
+            if (wasm_find_or_add_import(op->call_name, &wanted, ti) < 0)
+                return -1;
+        }
+    }
+    return 0;
 }
 
 static int wasm_pc_to_index(WasmFuncIR *f, int pc)
@@ -1104,15 +1278,22 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
             if (fi >= 0) {
                 for (i = 0; i < op->call_nb_args; ++i)
                     wasm_emit_call_arg(b, op, i, local_fp, local_i0, local_f0);
-                wb_u8(b, 0x10), wb_uleb(b, fi);
+                wb_u8(b, 0x10), wb_uleb(b, wasm_nb_import_funcs + fi);
             } else {
-                libcall_done = wasm_emit_libcall(b, op, local_fp, local_i0, local_f0, local_tmp64);
-                if (!libcall_done) {
-                    if (op->call_name && *op->call_name)
-                        tcc_error_noabort("wasm32 backend: unresolved direct call '%s'", op->call_name);
-                    else
-                        tcc_error_noabort("wasm32 backend: unresolved direct call token %d", op->call_tok);
-                    return;
+                int ii = wasm_find_import_index_by_name(op->call_name);
+                if (ii >= 0) {
+                    for (i = 0; i < op->call_nb_args; ++i)
+                        wasm_emit_call_arg(b, op, i, local_fp, local_i0, local_f0);
+                    wb_u8(b, 0x10), wb_uleb(b, ii);
+                } else {
+                    libcall_done = wasm_emit_libcall(b, op, local_fp, local_i0, local_f0, local_tmp64);
+                    if (!libcall_done) {
+                        if (op->call_name && *op->call_name)
+                            tcc_error_noabort("wasm32 backend: unresolved direct call '%s'", op->call_name);
+                        else
+                            tcc_error_noabort("wasm32 backend: unresolved direct call token %d", op->call_tok);
+                        return;
+                    }
                 }
             }
         } else {
@@ -1824,18 +2005,19 @@ static void wasm_str(WasmBuf *b, const char *s)
 
 ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
 {
-    WasmBuf mod, sec_type, sec_func, sec_table, sec_mem, sec_glob, sec_exp, sec_elem, sec_code, sec_data;
+    WasmBuf mod, sec_type, sec_imp, sec_func, sec_table, sec_mem, sec_glob, sec_exp, sec_elem, sec_code, sec_data;
     WasmSig *extra_sigs = NULL;
     int cap_extra_sigs = 0;
     int nb_extra_sigs = 0;
     int has_indirect_calls = 0;
-    int fd, i, nb_exports;
+    int fd, i, nb_exports, nb_table_funcs;
     int ro_size, data_size, bss_size, stack_size, memory_pages;
     int cur;
     TCCState *old_state = tcc_state;
 
     memset(&mod, 0, sizeof(mod));
     memset(&sec_type, 0, sizeof(sec_type));
+    memset(&sec_imp, 0, sizeof(sec_imp));
     memset(&sec_func, 0, sizeof(sec_func));
     memset(&sec_table, 0, sizeof(sec_table));
     memset(&sec_mem, 0, sizeof(sec_mem));
@@ -1844,6 +2026,7 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     memset(&sec_elem, 0, sizeof(sec_elem));
     memset(&sec_code, 0, sizeof(sec_code));
     memset(&sec_data, 0, sizeof(sec_data));
+    wasm_free_imports();
 
     tcc_state = s1;
     wasm_sec_text = text_section;
@@ -1866,52 +2049,17 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     wasm_layout.stack_top = wasm_align_up(cur + stack_size, 16);
     memory_pages = (wasm_layout.stack_top + 65535) / 65536;
 
+    if (wasm_collect_call_metadata(&extra_sigs, &cap_extra_sigs, &nb_extra_sigs,
+                                   &has_indirect_calls) < 0 || s1->nb_errors) {
+        tcc_free(extra_sigs);
+        wasm_free_imports();
+        tcc_state = old_state;
+        return -1;
+    }
+
     /* Resolve static data initializers that require symbol addresses. */
     wasm_apply_data_relocs(wasm_sec_rodata);
     wasm_apply_data_relocs(wasm_sec_data);
-
-    /* Resolve call_indirect signatures and assign type indices. */
-    for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
-        WasmFuncIR *f = &tcc_wasm_funcs[i];
-        int k;
-        for (k = 0; k < f->nb_ops; ++k) {
-            WasmOp *op = &f->ops[k];
-            WasmSig wanted;
-            int ti = -1, j;
-            if (op->kind != WASM_OP_CALL_INDIRECT)
-                continue;
-            has_indirect_calls = 1;
-            wanted.ret_type = op->type;
-            wanted.nb_params = op->call_nb_args;
-            memcpy(wanted.param_types, op->call_arg_type, op->call_nb_args);
-            for (j = 0; j < tcc_wasm_nb_funcs; ++j) {
-                WasmFuncIR *g = &tcc_wasm_funcs[j];
-                if (g->nb_params <= WASM_MAX_CALL_ARGS && wasm_sig_matches_func(&wanted, g)) {
-                    ti = j;
-                    break;
-                }
-            }
-            if (ti < 0) {
-                for (j = 0; j < nb_extra_sigs; ++j) {
-                    if (wasm_sig_matches_op(&extra_sigs[j], op)) {
-                        ti = tcc_wasm_nb_funcs + j;
-                        break;
-                    }
-                }
-                if (ti < 0) {
-                    if (nb_extra_sigs >= cap_extra_sigs) {
-                        int n = cap_extra_sigs ? cap_extra_sigs * 2 : 8;
-                        extra_sigs = tcc_realloc(extra_sigs, n * sizeof(*extra_sigs));
-                        cap_extra_sigs = n;
-                    }
-                    extra_sigs[nb_extra_sigs] = wanted;
-                    ti = tcc_wasm_nb_funcs + nb_extra_sigs;
-                    nb_extra_sigs++;
-                }
-            }
-            op->imm = ti;
-        }
-    }
 
     /* type section: one type per function + extra indirect signatures. */
     wb_uleb(&sec_type, tcc_wasm_nb_funcs + nb_extra_sigs);
@@ -1939,24 +2087,37 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
             wb_uleb(&sec_type, 1), wb_u8(&sec_type, wasm_valtype_byte(extra_sigs[i].ret_type));
     }
 
+    if (wasm_nb_import_funcs > 0) {
+        wb_uleb(&sec_imp, wasm_nb_import_funcs);
+        for (i = 0; i < wasm_nb_import_funcs; ++i) {
+            wasm_str(&sec_imp, "env");
+            wasm_str(&sec_imp, wasm_import_funcs[i].name);
+            wb_u8(&sec_imp, 0x00); /* function import */
+            wb_uleb(&sec_imp, wasm_import_funcs[i].type_index);
+        }
+    }
+
     /* function section */
     wb_uleb(&sec_func, tcc_wasm_nb_funcs);
     for (i = 0; i < tcc_wasm_nb_funcs; ++i)
         wb_uleb(&sec_func, i);
 
     if (has_indirect_calls) {
+        nb_table_funcs = tcc_wasm_nb_funcs + wasm_nb_import_funcs;
         /* one funcref table, with slot 0 reserved as null */
         wb_uleb(&sec_table, 1);
         wb_u8(&sec_table, 0x70); /* funcref */
         wb_u8(&sec_table, 0x00); /* min only */
-        wb_uleb(&sec_table, tcc_wasm_nb_funcs + 1);
+        wb_uleb(&sec_table, nb_table_funcs + 1);
 
         wb_uleb(&sec_elem, 1);
         wb_u8(&sec_elem, 0x00); /* active segment for table 0 */
         wb_i32_const(&sec_elem, 1);
         wb_u8(&sec_elem, 0x0b);
-        wb_uleb(&sec_elem, tcc_wasm_nb_funcs);
+        wb_uleb(&sec_elem, nb_table_funcs);
         for (i = 0; i < tcc_wasm_nb_funcs; ++i)
+            wb_uleb(&sec_elem, wasm_nb_import_funcs + i);
+        for (i = 0; i < wasm_nb_import_funcs; ++i)
             wb_uleb(&sec_elem, i);
     }
 
@@ -1995,7 +2156,7 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
             continue;
         wasm_str(&sec_exp, name);
         wb_u8(&sec_exp, 0x00);
-        wb_uleb(&sec_exp, i);
+        wb_uleb(&sec_exp, wasm_nb_import_funcs + i);
     }
 
     /* code section */
@@ -2006,6 +2167,8 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     }
 
     if (s1->nb_errors) {
+        tcc_free(extra_sigs);
+        wasm_free_imports();
         tcc_state = old_state;
         return -1;
     }
@@ -2035,6 +2198,7 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     wb_u8(&mod, 0x01), wb_u8(&mod, 0x00), wb_u8(&mod, 0x00), wb_u8(&mod, 0x00);
 
     wasm_add_section(&mod, 1, &sec_type);
+    wasm_add_section(&mod, 2, &sec_imp);
     wasm_add_section(&mod, 3, &sec_func);
     wasm_add_section(&mod, 4, &sec_table);
     wasm_add_section(&mod, 5, &sec_mem);
@@ -2062,6 +2226,7 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
 
     tcc_free(mod.data);
     tcc_free(sec_type.data);
+    tcc_free(sec_imp.data);
     tcc_free(sec_func.data);
     tcc_free(sec_table.data);
     tcc_free(sec_mem.data);
@@ -2071,6 +2236,7 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     tcc_free(sec_code.data);
     tcc_free(sec_data.data);
     tcc_free(extra_sigs);
+    wasm_free_imports();
 
     tcc_state = old_state;
     return 0;
