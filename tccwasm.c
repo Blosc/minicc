@@ -612,14 +612,85 @@ static int wasm_emit_libcall(WasmBuf *b, WasmOp *op,
     return 0;
 }
 
+/* Returns the wasm local index that op will read first, or -1 if unknown.
+ * Used by peephole optimization to chain values on the wasm stack. */
+static int wasm_op_first_input(WasmOp *op, int local_i0, int local_f0)
+{
+    switch (op->kind) {
+    /* Ops that read r0 (dst) as first operand — integer */
+    case WASM_OP_I32_BIN:
+    case WASM_OP_I32_ADDC:
+    case WASM_OP_I32_SUBC:
+    case WASM_OP_UMULL_U32:
+    case WASM_OP_SET_CMP_I32:
+        if (op->r0 < 0 || op->r0 > 3) return -1;
+        return wasm_i32_reg_local(op->r0, local_i0);
+
+    /* Ops that read r0 (dst) as first operand — float */
+    case WASM_OP_F64_BIN:
+    case WASM_OP_F64_NEG:
+    case WASM_OP_SET_CMP_F64:
+    case WASM_OP_F32_BIN:
+    case WASM_OP_F32_NEG:
+    case WASM_OP_SET_CMP_F32:
+    case WASM_OP_FTOF_TO_F32:
+        if (op->r0 < 4 || op->r0 > 7) return -1;
+        return wasm_f64_reg_local(op->r0, local_f0);
+
+    /* Ops that read r1 as first operand (conversions: output to r0, input from r1) */
+    case WASM_OP_ITOF_F32:
+    case WASM_OP_ITOF_F64:
+        if (op->r1 < 0 || op->r1 > 3) return -1;
+        return wasm_i32_reg_local(op->r1, local_i0);
+    case WASM_OP_FTOI_I32:
+    case WASM_OP_FTOI_I64:
+        if (op->r1 < 4 || op->r1 > 7) return -1;
+        return wasm_f64_reg_local(op->r1, local_f0);
+
+    /* MOV reads r1 */
+    case WASM_OP_MOV_I32:
+        if (op->r1 < 0 || op->r1 > 3) return -1;
+        return wasm_i32_reg_local(op->r1, local_i0);
+    case WASM_OP_MOV_F64:
+        if (op->r1 < 4 || op->r1 > 7) return -1;
+        return wasm_f64_reg_local(op->r1, local_f0);
+
+    default:
+        return -1;
+    }
+}
+
 static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
-                           int case_index, int loop_depth,
+                           int case_index, int loop_depth, int cur_block,
                            int local_pc, int local_fp, int local_cmp, int local_carry,
                            int local_i0, int local_f0, int local_tmp64,
-                           int *op_to_block, int nb_blocks, int emit_dispatch)
+                           int *op_to_block, int nb_blocks, int emit_dispatch,
+                           int stack_reg, int next_first_input, int *p_stack_out)
 {
     int next_index = case_index + 1;
     int dst, src, target_index;
+
+    *p_stack_out = -1;
+
+    /* Peephole: emit local.tee (keep on stack) instead of local.set when
+     * the next op in the same block will read this local first. */
+#define WB_SET_OR_TEE(buf, local) do { \
+    if ((local) == next_first_input && next_first_input >= 0) { \
+        wb_local_tee(buf, local); \
+        *p_stack_out = local; \
+    } else { \
+        wb_local_set(buf, local); \
+    } \
+} while (0)
+
+    /* Peephole: skip local.get if the value is already on the wasm stack
+     * from the previous op's local.tee. */
+#define WB_GET_OR_SKIP(buf, local) do { \
+    if ((local) == stack_reg && stack_reg >= 0) \
+        stack_reg = -2; /* consumed */ \
+    else \
+        wb_local_get(buf, local); \
+} while (0)
 
     if (next_index > f->nb_ops)
         next_index = f->nb_ops;
@@ -628,27 +699,27 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
     case WASM_OP_I32_CONST:
         dst = wasm_i32_reg_local(op->r0, local_i0);
         wb_i32_const(b, op->imm);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_F64_CONST:
         dst = wasm_f64_reg_local(op->r0, local_f0);
         wb_f64_const(b, op->f64);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_MOV_I32:
         dst = wasm_i32_reg_local(op->r0, local_i0);
         src = wasm_i32_reg_local(op->r1, local_i0);
-        wb_local_get(b, src);
-        wb_local_set(b, dst);
+        WB_GET_OR_SKIP(b, src);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_MOV_F64:
         dst = wasm_f64_reg_local(op->r0, local_f0);
         src = wasm_f64_reg_local(op->r1, local_f0);
-        wb_local_get(b, src);
-        wb_local_set(b, dst);
+        WB_GET_OR_SKIP(b, src);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_ADDR_LOCAL:
@@ -656,13 +727,13 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         wb_local_get(b, local_fp);
         if (op->imm)
             wb_i32_const(b, op->imm), wb_u8(b, 0x6a);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_ADDR_SYM:
         dst = wasm_i32_reg_local(op->r0, local_i0);
         wb_i32_const(b, wasm_sym_addr_from_op(op));
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_LOAD_I32:
@@ -679,7 +750,7 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         case WASM_OP_LOAD_S16: wb_u8(b, 0x2e), wb_memarg(b, 1); break;
         default: wb_u8(b, 0x2f), wb_memarg(b, 1); break;
         }
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_LOAD_F32:
@@ -687,14 +758,14 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         wasm_emit_addr(b, op, local_fp, local_i0);
         wb_u8(b, 0x2a), wb_memarg(b, 2);
         wb_u8(b, 0xbb); /* f64.promote_f32 */
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_LOAD_F64:
         dst = wasm_f64_reg_local(op->r0, local_f0);
         wasm_emit_addr(b, op, local_fp, local_i0);
         wb_u8(b, 0x2b), wb_memarg(b, 3);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_STORE_I32:
@@ -734,19 +805,19 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
 
     case WASM_OP_I32_BIN:
         dst = wasm_i32_reg_local(op->r0, local_i0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         if (op->flags & WASM_OP_FLAG_IMM)
             wb_i32_const(b, op->imm);
         else
             wb_local_get(b, wasm_i32_reg_local(op->r1, local_i0));
         wb_u8(b, wasm_i32_bin_opcode(op->op));
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_I32_ADDC:
     case WASM_OP_I32_SUBC:
         dst = wasm_i32_reg_local(op->r0, local_i0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         wb_u8(b, 0xad); /* i64.extend_i32_u */
         if (op->flags & WASM_OP_FLAG_IMM)
             wb_i32_const(b, op->imm);
@@ -768,7 +839,7 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
 
     case WASM_OP_UMULL_U32:
         dst = wasm_i32_reg_local(op->r0, local_i0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         wb_u8(b, 0xad); /* i64.extend_i32_u */
         if (op->flags & WASM_OP_FLAG_IMM)
             wb_i32_const(b, op->imm);
@@ -784,45 +855,49 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         wb_i32_const(b, 0);
         wb_local_get(b, dst);
         wb_u8(b, 0x6b);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_F64_BIN:
         dst = wasm_f64_reg_local(op->r0, local_f0);
         src = wasm_f64_reg_local(op->r1, local_f0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         wb_local_get(b, src);
         wb_u8(b, wasm_f_bin_opcode(op->op, 0));
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_F32_BIN:
         dst = wasm_f64_reg_local(op->r0, local_f0);
         src = wasm_f64_reg_local(op->r1, local_f0);
-        wb_local_get(b, dst), wb_u8(b, 0xb6);
+        WB_GET_OR_SKIP(b, dst);
+        wb_u8(b, 0xb6);
         wb_local_get(b, src), wb_u8(b, 0xb6);
         wb_u8(b, wasm_f_bin_opcode(op->op, 1));
         wb_u8(b, 0xbb);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_F64_NEG:
         dst = wasm_f64_reg_local(op->r0, local_f0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         wb_u8(b, 0x9a);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_F32_NEG:
         dst = wasm_f64_reg_local(op->r0, local_f0);
-        wb_local_get(b, dst), wb_u8(b, 0xb6);
+        WB_GET_OR_SKIP(b, dst);
+        wb_u8(b, 0xb6);
         wb_u8(b, 0x8c);
         wb_u8(b, 0xbb);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_SET_CMP_I32:
-        wb_local_get(b, wasm_i32_reg_local(op->r0, local_i0));
+    {
+        int r0_local = wasm_i32_reg_local(op->r0, local_i0);
+        WB_GET_OR_SKIP(b, r0_local);
         if (op->flags & WASM_OP_FLAG_IMM)
             wb_i32_const(b, op->imm);
         else
@@ -830,76 +905,146 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
         wb_u8(b, wasm_i32_cmp_opcode(op->op));
         wb_local_set(b, local_cmp);
         break;
+    }
 
     case WASM_OP_SET_CMP_F32:
-        wb_local_get(b, wasm_f64_reg_local(op->r0, local_f0)), wb_u8(b, 0xb6);
+    {
+        int r0_local = wasm_f64_reg_local(op->r0, local_f0);
+        WB_GET_OR_SKIP(b, r0_local);
+        wb_u8(b, 0xb6);
         wb_local_get(b, wasm_f64_reg_local(op->r1, local_f0)), wb_u8(b, 0xb6);
         wb_u8(b, wasm_f32_cmp_opcode(op->op));
         wb_local_set(b, local_cmp);
         break;
+    }
 
     case WASM_OP_SET_CMP_F64:
-        wb_local_get(b, wasm_f64_reg_local(op->r0, local_f0));
+    {
+        int r0_local = wasm_f64_reg_local(op->r0, local_f0);
+        WB_GET_OR_SKIP(b, r0_local);
         wb_local_get(b, wasm_f64_reg_local(op->r1, local_f0));
         wb_u8(b, wasm_f64_cmp_opcode(op->op));
         wb_local_set(b, local_cmp);
         break;
+    }
 
     case WASM_OP_SET_I32_FROM_CMP:
         dst = wasm_i32_reg_local(op->r0, local_i0);
         wb_local_get(b, local_cmp);
         if (op->flags & WASM_OP_FLAG_INVERT)
             wb_u8(b, 0x45); /* i32.eqz */
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_JMP:
         target_index = wasm_pc_to_index(f, op->target_pc);
         if (op_to_block) {
             int bi = (target_index < f->nb_ops) ? op_to_block[target_index] : nb_blocks;
-            wb_i32_const(b, bi);
+            if (bi < cur_block) {
+                /* Forward jump (lower block index = later in code): direct br */
+                wb_u8(b, 0x0c), wb_uleb(b, cur_block - bi - 1);
+            } else if (bi == nb_blocks) {
+                /* Jump to halt block: direct br */
+                wb_u8(b, 0x0c), wb_uleb(b, loop_depth - 1);
+            } else {
+                /* Backward jump (higher block = earlier in code): dispatch */
+                wb_i32_const(b, bi);
+                wb_local_set(b, local_pc);
+                wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+            }
         } else {
             wb_i32_const(b, target_index);
+            wb_local_set(b, local_pc);
+            wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         }
-        wb_local_set(b, local_pc);
-        wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         return;
 
     case WASM_OP_JMP_CMP:
         target_index = wasm_pc_to_index(f, op->target_pc);
-        wb_local_get(b, local_cmp);
-        if (op->flags & WASM_OP_FLAG_INVERT)
-            wb_u8(b, 0x45);
-        wb_u8(b, 0x04), wb_u8(b, 0x7f); /* if (result i32) */
         if (op_to_block) {
             int bi = (target_index < f->nb_ops) ? op_to_block[target_index] : nb_blocks;
             int next_bi = (next_index < f->nb_ops) ? op_to_block[next_index] : nb_blocks;
-            wb_i32_const(b, bi);
-            wb_u8(b, 0x05); /* else */
-            wb_i32_const(b, next_bi);
+            /* "forward" means target < cur_block (lower block = later in execution)
+             * or target == nb_blocks (halt block) */
+            int target_fwd = (bi < cur_block) || (bi == nb_blocks);
+            int next_fwd = (next_bi < cur_block) || (next_bi == nb_blocks);
+            int target_depth = (bi == nb_blocks) ? loop_depth - 1 : cur_block - bi - 1;
+            int next_depth = (next_bi == nb_blocks) ? loop_depth - 1 : cur_block - next_bi - 1;
+
+            if (target_fwd && next_fwd) {
+                /* Both forward: br_if + br */
+                wb_local_get(b, local_cmp);
+                if (op->flags & WASM_OP_FLAG_INVERT)
+                    wb_u8(b, 0x45);
+                wb_u8(b, 0x0d), wb_uleb(b, target_depth); /* br_if */
+                wb_u8(b, 0x0c), wb_uleb(b, next_depth); /* br */
+            } else if (target_fwd) {
+                /* Target forward, fallthrough backward */
+                wb_local_get(b, local_cmp);
+                if (op->flags & WASM_OP_FLAG_INVERT)
+                    wb_u8(b, 0x45);
+                wb_u8(b, 0x0d), wb_uleb(b, target_depth); /* br_if */
+                /* Fall through to dispatch for backward next */
+                wb_i32_const(b, next_bi);
+                wb_local_set(b, local_pc);
+                wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+            } else if (next_fwd) {
+                /* Target backward, fallthrough forward: invert condition */
+                wb_local_get(b, local_cmp);
+                if (op->flags & WASM_OP_FLAG_INVERT)
+                    wb_u8(b, 0x45);
+                wb_u8(b, 0x45); /* i32.eqz — invert */
+                wb_u8(b, 0x0d), wb_uleb(b, next_depth); /* br_if !cond */
+                /* Fall through to dispatch for backward target */
+                wb_i32_const(b, bi);
+                wb_local_set(b, local_pc);
+                wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+            } else {
+                /* Both backward: full dispatch */
+                wb_local_get(b, local_cmp);
+                if (op->flags & WASM_OP_FLAG_INVERT)
+                    wb_u8(b, 0x45);
+                wb_u8(b, 0x04), wb_u8(b, 0x7f); /* if (result i32) */
+                wb_i32_const(b, bi);
+                wb_u8(b, 0x05); /* else */
+                wb_i32_const(b, next_bi);
+                wb_u8(b, 0x0b); /* end */
+                wb_local_set(b, local_pc);
+                wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+            }
         } else {
+            wb_local_get(b, local_cmp);
+            if (op->flags & WASM_OP_FLAG_INVERT)
+                wb_u8(b, 0x45);
+            wb_u8(b, 0x04), wb_u8(b, 0x7f); /* if (result i32) */
             wb_i32_const(b, target_index);
             wb_u8(b, 0x05); /* else */
             wb_i32_const(b, next_index);
+            wb_u8(b, 0x0b); /* end */
+            wb_local_set(b, local_pc);
+            wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         }
-        wb_u8(b, 0x0b); /* end */
-        wb_local_set(b, local_pc);
-        wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
         return;
 
     case WASM_OP_ITOF_F32:
         dst = wasm_f64_reg_local(op->r0, local_f0);
-        wb_local_get(b, wasm_i32_reg_local(op->r1, local_i0));
+        {
+            int r1_local = wasm_i32_reg_local(op->r1, local_i0);
+            WB_GET_OR_SKIP(b, r1_local);
+        }
         wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xb3 : 0xb2);
         wb_u8(b, 0xbb);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_ITOF_F64:
         dst = wasm_f64_reg_local(op->r0, local_f0);
-        wb_local_get(b, wasm_i32_reg_local(op->r1, local_i0));
+        {
+            int r1_local = wasm_i32_reg_local(op->r1, local_i0);
+            WB_GET_OR_SKIP(b, r1_local);
+        }
         wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xb8 : 0xb7);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_I64_TOF_F32:
@@ -923,13 +1068,19 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
 
     case WASM_OP_FTOI_I32:
         dst = wasm_i32_reg_local(op->r0, local_i0);
-        wb_local_get(b, wasm_f64_reg_local(op->r1, local_f0));
+        {
+            int r1_local = wasm_f64_reg_local(op->r1, local_f0);
+            WB_GET_OR_SKIP(b, r1_local);
+        }
         wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xab : 0xa9);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_FTOI_I64:
-        wb_local_get(b, wasm_f64_reg_local(op->r1, local_f0));
+        {
+            int r1_local = wasm_f64_reg_local(op->r1, local_f0);
+            WB_GET_OR_SKIP(b, r1_local);
+        }
         wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xb1 : 0xb0);
         wasm_store_i64_to_i32_pair(b, local_tmp64,
             wasm_i32_reg_local(op->r0, local_i0),
@@ -938,10 +1089,10 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
 
     case WASM_OP_FTOF_TO_F32:
         dst = wasm_f64_reg_local(op->r0, local_f0);
-        wb_local_get(b, dst);
+        WB_GET_OR_SKIP(b, dst);
         wb_u8(b, 0xb6);
         wb_u8(b, 0xbb);
-        wb_local_set(b, dst);
+        WB_SET_OR_TEE(b, dst);
         break;
 
     case WASM_OP_CALL:
@@ -989,9 +1140,14 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
     }
 
     case WASM_OP_RET:
-        wb_i32_const(b, op_to_block ? nb_blocks : f->nb_ops);
-        wb_local_set(b, local_pc);
-        wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+        if (op_to_block) {
+            /* Direct br to halt block (always forward) */
+            wb_u8(b, 0x0c), wb_uleb(b, loop_depth - 1);
+        } else {
+            wb_i32_const(b, f->nb_ops);
+            wb_local_set(b, local_pc);
+            wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
+        }
         return;
 
     default:
@@ -1007,10 +1163,13 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
             dispatch_target = nb_blocks;
         else
             dispatch_target = next_index;
+        *p_stack_out = -1;
         wb_i32_const(b, dispatch_target);
         wb_local_set(b, local_pc);
         wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
     }
+#undef WB_SET_OR_TEE
+#undef WB_GET_OR_SKIP
 }
 
 static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
@@ -1134,17 +1293,24 @@ static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
 
         /* 4. Emit blocks in reverse order */
         for (b_idx = nb_blocks - 1; b_idx >= 0; --b_idx) {
-            int j;
+            int j, stack_reg = -1;
             wb_u8(&body, 0x0b); /* end block b_idx */
             for (j = block_start[b_idx]; j < block_end[b_idx]; ++j) {
                 int is_last = (j == block_end[b_idx] - 1);
+                int next_fi = -1;
+                int stack_out = -1;
+                /* Peek at the next op to determine if we can chain values */
+                if (!is_last && j + 1 < block_end[b_idx])
+                    next_fi = wasm_op_first_input(&f->ops[j + 1], local_i0, local_f0);
                 /* loop_depth: distance from this block's position to the
                  * loop header.  With nb_blocks blocks + halt block, the
                  * loop is at depth b_idx + 1. */
-                wasm_emit_case(&body, f, &f->ops[j], j, b_idx + 1,
+                wasm_emit_case(&body, f, &f->ops[j], j, b_idx + 1, b_idx,
                                local_pc, local_fp, local_cmp, local_carry,
                                local_i0, local_f0, local_tmp64,
-                               op_to_block, nb_blocks, is_last);
+                               op_to_block, nb_blocks, is_last,
+                               stack_reg, next_fi, &stack_out);
+                stack_reg = stack_out;
                 if (s1->nb_errors) break;
             }
             if (s1->nb_errors) break;

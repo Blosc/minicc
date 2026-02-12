@@ -8,7 +8,8 @@ NODE ?= node
 OUTDIR = out
 
 TESTS = ll_helpers call_indirect globals static_ptr_init \
-        coalesce_arith coalesce_loops coalesce_branch coalesce_mandel
+        coalesce_arith coalesce_loops coalesce_branch coalesce_mandel \
+        coalesce_peephole coalesce_directbr
 WASM_CFLAGS = -nostdlib -B$(TOP) -I$(TOPSRC)/include
 
 all test wasm.all: $(addprefix run-,$(TESTS))
