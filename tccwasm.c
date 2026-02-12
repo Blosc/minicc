@@ -944,8 +944,10 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
                 libcall_done = wasm_emit_libcall(b, op, local_fp, local_i0, local_f0, local_tmp64);
                 if (!libcall_done) {
                     if (op->call_name && *op->call_name)
-                        tcc_error("wasm32 backend: unresolved direct call '%s'", op->call_name);
-                    tcc_error("wasm32 backend: unresolved direct call token %d", op->call_tok);
+                        tcc_error_noabort("wasm32 backend: unresolved direct call '%s'", op->call_name);
+                    else
+                        tcc_error_noabort("wasm32 backend: unresolved direct call token %d", op->call_tok);
+                    return;
                 }
             }
         } else {
@@ -988,7 +990,7 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
     wb_u8(b, 0x0c), wb_uleb(b, loop_depth);
 }
 
-static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f)
+static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
 {
     WasmBuf body;
     int i;
@@ -1067,10 +1069,16 @@ static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f)
             wasm_emit_case(&body, f, &f->ops[i], i, i + 1,
                            local_pc, local_fp, local_cmp, local_carry,
                            local_i0, local_f0, local_tmp64);
+            if (s1->nb_errors) break;
         }
 
         wb_u8(&body, 0x0b); /* end halt block */
         wb_u8(&body, 0x0b); /* end loop */
+    }
+
+    if (s1->nb_errors) {
+        tcc_free(body.data);
+        return;
     }
 
     /* epilog: restore stack pointer */
@@ -1147,11 +1155,11 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
     bss_size = wasm_sec_bss ? (int)wasm_sec_bss->data_offset : 0;
     stack_size = 65536;
 
-    cur = 1024;
+    cur = s1->wasm_data_base ? (int)s1->wasm_data_base : 1024;
     wasm_layout.rodata_base = ro_size ? wasm_align_up(cur, 16) : 0;
-    cur = wasm_layout.rodata_base + ro_size;
+    if (ro_size) cur = wasm_layout.rodata_base + ro_size;
     wasm_layout.data_base = data_size ? wasm_align_up(cur, 16) : 0;
-    cur = wasm_layout.data_base + data_size;
+    if (data_size) cur = wasm_layout.data_base + data_size;
     wasm_layout.bss_base = wasm_align_up(cur, 16);
     cur = wasm_layout.bss_base + bss_size;
     wasm_layout.stack_top = wasm_align_up(cur + stack_size, 16);
@@ -1291,8 +1299,15 @@ ST_FUNC int tcc_output_wasm(TCCState *s1, const char *filename)
 
     /* code section */
     wb_uleb(&sec_code, tcc_wasm_nb_funcs);
-    for (i = 0; i < tcc_wasm_nb_funcs; ++i)
-        wasm_emit_function_body(&sec_code, &tcc_wasm_funcs[i]);
+    for (i = 0; i < tcc_wasm_nb_funcs; ++i) {
+        wasm_emit_function_body(&sec_code, &tcc_wasm_funcs[i], s1);
+        if (s1->nb_errors) break;
+    }
+
+    if (s1->nb_errors) {
+        tcc_state = old_state;
+        return -1;
+    }
 
     /* data section (rodata + data). bss remains zero-initialized */
     if (ro_size || data_size) {

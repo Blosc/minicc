@@ -1986,6 +1986,7 @@ ST_FUNC int gv(int rc)
             }
         }
         vtop->r = r;
+        vtop->c.i = 0;
 #ifdef TCC_TARGET_C67
         /* uses register pairs for doubles */
         if (bt == VT_DOUBLE)
@@ -2285,6 +2286,16 @@ static void gen_opl(int op)
                This is not needed when comparing switch cases */
             save_regs(4);
         }
+#ifdef TCC_TARGET_WASM32
+        /* wasm32 uses a single boolean local for comparison results,
+           so it cannot derive NE from a previous LE/GE comparison the
+           way x86 can reuse FLAGS.  Duplicate H1/H2 now so we can do
+           a separate NE comparison later. */
+        if (op != TOK_EQ && op != TOK_NE) {
+            vpushv(vtop - 1); /* dup H1 */
+            vpushv(vtop - 1); /* dup H2 */
+        }
+#endif
         /* compare high */
         op1 = op;
         /* when values are equal, we need to compare low words. since
@@ -2306,8 +2317,13 @@ static void gen_opl(int op)
             a = gvtst(1, 0);
             if (op != TOK_EQ) {
                 /* generate non equal test */
+#ifdef TCC_TARGET_WASM32
+                /* wasm32: use the duplicated H1/H2 for a real NE cmp */
+                gen_op(TOK_NE);
+#else
                 vpushi(0);
                 vset_VT_CMP(TOK_NE);
+#endif
                 b = gvtst(0, 0);
             }
         }
@@ -3830,6 +3846,7 @@ ST_FUNC void vstore(void)
 		sv.sym = NULL;
                 load(r, &sv);
                 vtop[-1].r = r | VT_LVAL;
+                vtop[-1].c.i = 0;
             }
 
             r = vtop->r & VT_VALMASK;
@@ -6634,7 +6651,11 @@ static void expr_cond(void)
           type_incompatibility_error(&sv.type, &vtop->type,
             "type mismatch in conditional expression (have '%s' and '%s')");
 
-        if (c < 0 && is_cond_bool(vtop) && is_cond_bool(&sv)) {
+        if (c < 0 && is_cond_bool(vtop) && is_cond_bool(&sv)
+#ifdef TCC_TARGET_WASM32
+            && 0 /* wasm32: single local_cmp can't track two branches */
+#endif
+           ) {
             /* optimize "if (f ? a > b : c || d) ..." for example, where normally
                "a < b" and "c || d" would be forced to "(int)0/1" first, whereas
                this code jumps directly to the if's then/else branches. */

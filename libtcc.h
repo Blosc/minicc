@@ -117,6 +117,10 @@ LIBTCCAPI int tcc_compile_string_file(TCCState *s, const char *buf, const char *
    The filename can be loaded with gdb command add-symbol-file */
 LIBTCCAPI int elf_output_obj(TCCState *s1, const char *filename);
 
+/* Set base address for wasm32 data/stack layout (default 1024).
+   Call before tcc_output_file(). Only meaningful for TCC_TARGET_WASM32. */
+LIBTCCAPI void tcc_set_wasm_data_base(TCCState *s, unsigned int base);
+
 /* custom error printer for runtime exceptions. Returning 0 stops backtrace */
 typedef int TCCBtFunc(void *udata, void *pc, const char *file, int line, const char* func, const char *msg);
 LIBTCCAPI void tcc_set_backtrace_func(TCCState *s1, void* userdata, TCCBtFunc*);

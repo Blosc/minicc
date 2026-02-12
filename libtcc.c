@@ -701,6 +701,15 @@ LIBTCCAPI void tcc_set_error_func(TCCState *s, void *error_opaque, TCCErrorFunc 
     s->error_func = error_func;
 }
 
+LIBTCCAPI void tcc_set_wasm_data_base(TCCState *s, unsigned int base)
+{
+#ifdef TCC_TARGET_WASM32
+    s->wasm_data_base = base;
+#else
+    (void)s; (void)base;
+#endif
+}
+
 /* error without aborting current compilation */
 PUB_FUNC int _tcc_error_noabort(const char *fmt, ...)
 {

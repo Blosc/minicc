@@ -1023,6 +1023,9 @@ struct TCCState {
     /* -Wl options */
     char **link_argv;
     int link_argc, link_optind;
+#ifdef TCC_TARGET_WASM32
+    unsigned int wasm_data_base; /* base address for wasm data layout (0 = default 1024) */
+#endif
 };
 
 struct filespec {

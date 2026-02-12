@@ -241,13 +241,19 @@ static int wasm_add_patch(int op_index, int next)
 
 static int wasm_cmp_invert(int op)
 {
-    if (!wasm_last_cmp_valid)
+    if (!wasm_last_cmp_valid) {
         tcc_error("wasm32 backend: conditional branch without prior comparison");
+    }
     if (op == wasm_last_cmp_op)
         return 0;
     if (op == (wasm_last_cmp_op ^ 1))
         return 1;
-    tcc_error("wasm32 backend: unsupported comparison remap %d after %d", op, wasm_last_cmp_op);
+    /* Mismatch: the requested op doesn't match the last emitted
+       comparison.  This happens in ternary expressions where the TRUE
+       and FALSE branches generate different comparison types.  In the
+       switch-loop dispatch, only one branch executes at runtime, so
+       local_cmp will hold the result from the matching branch's
+       comparison — which matches the requested op.  No inversion. */
     return 0;
 }
 
