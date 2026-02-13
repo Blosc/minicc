@@ -240,6 +240,11 @@ if(MINICC_BUILD_SHARED_LIBTCC)
   minicc_libtcc1_helpers_for_target("${_minicc_target}" MINICC_LIBTCC1_HELPER_SOURCES)
   add_library(minicc_libtcc_shared SHARED ${MINICC_NATIVE_LIBTCC_SOURCES} ${MINICC_LIBTCC1_HELPER_SOURCES})
   set_target_properties(minicc_libtcc_shared PROPERTIES OUTPUT_NAME "tcc")
+  if(WIN32)
+    # Avoid collision with static minicc_libtcc (both would otherwise emit tcc.lib).
+    # Keep runtime DLL name as tcc.dll while giving the import library a unique name.
+    set_target_properties(minicc_libtcc_shared PROPERTIES ARCHIVE_OUTPUT_NAME "tccdll")
+  endif()
   target_include_directories(minicc_libtcc_shared PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(minicc_libtcc_shared PRIVATE ONE_SOURCE=0 TCC_LIBTCC1="" ${MINICC_NATIVE_DEFINES} ${MINICC_OBJFMT_DEFINES})
   if(APPLE AND _minicc_target STREQUAL "arm64")
