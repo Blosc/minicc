@@ -96,11 +96,20 @@ configure_file(
 # When cross-compiling, build it natively so it can run on the build host.
 if(CMAKE_CROSSCOMPILING)
   include(ExternalProject)
+  set(_c2str_host_src_dir "${CMAKE_CURRENT_BINARY_DIR}/c2str-host-src")
   set(_c2str_host_build_dir "${CMAKE_CURRENT_BINARY_DIR}/c2str-host-build")
+  # Generate the host-tool project into the build tree so it works whether
+  # minicc is used directly or fetched via FetchContent/ExternalProject.
+  string(REPLACE "\\" "/" _conftest_src "${CMAKE_CURRENT_SOURCE_DIR}/conftest.c")
+  file(WRITE "${_c2str_host_src_dir}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.20)\n"
+    "project(minicc_c2str_host C)\n"
+    "add_executable(minicc-c2str \"${_conftest_src}\")\n"
+    "target_compile_definitions(minicc-c2str PRIVATE C2STR=1)\n"
+  )
   ExternalProject_Add(minicc-c2str-host
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/c2str-host"
+    SOURCE_DIR "${_c2str_host_src_dir}"
     BINARY_DIR "${_c2str_host_build_dir}"
-    CMAKE_ARGS "-DC2STR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/conftest.c"
     INSTALL_COMMAND ""
     BUILD_BYPRODUCTS "${_c2str_host_build_dir}/minicc-c2str"
   )
