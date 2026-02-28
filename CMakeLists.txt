@@ -95,26 +95,59 @@ configure_file(
 # minicc-c2str is a build-time host tool (generates tccdefs_.h).
 # When cross-compiling, build it natively so it can run on the build host.
 if(CMAKE_CROSSCOMPILING)
-  include(ExternalProject)
-  set(_c2str_host_src_dir "${CMAKE_CURRENT_BINARY_DIR}/c2str-host-src")
-  set(_c2str_host_build_dir "${CMAKE_CURRENT_BINARY_DIR}/c2str-host-build")
-  # Generate the host-tool project into the build tree so it works whether
-  # minicc is used directly or fetched via FetchContent/ExternalProject.
-  string(REPLACE "\\" "/" _conftest_src "${CMAKE_CURRENT_SOURCE_DIR}/conftest.c")
-  file(WRITE "${_c2str_host_src_dir}/CMakeLists.txt"
-    "cmake_minimum_required(VERSION 3.20)\n"
-    "project(minicc_c2str_host C)\n"
-    "add_executable(minicc-c2str \"${_conftest_src}\")\n"
-    "target_compile_definitions(minicc-c2str PRIVATE C2STR=1)\n"
+  # Find the native host C compiler — NOT CMAKE_C_COMPILER, which is the
+  # cross-compiler.  The CC environment variable is also the cross-compiler
+  # in conda-forge and similar setups, so we must bypass it.
+  set(_host_cc "")
+  if(APPLE)
+    # xcrun reliably returns the Xcode/CLT native compiler on macOS.
+    execute_process(
+      COMMAND xcrun --find cc
+      OUTPUT_VARIABLE _host_cc
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE _xcrun_result
+    )
+    if(NOT _xcrun_result EQUAL 0)
+      set(_host_cc "")
+    endif()
+  endif()
+  # Some cross-compilation environments (e.g., autoconf-based) expose the
+  # host compiler as CC_FOR_BUILD.
+  if(NOT _host_cc AND DEFINED ENV{CC_FOR_BUILD})
+    set(_host_cc "$ENV{CC_FOR_BUILD}")
+  endif()
+  # Last resort: look in standard system locations, avoiding PATH entries
+  # that may contain the cross-compiler.
+  if(NOT _host_cc)
+    find_program(_host_cc NAMES cc clang gcc
+      PATHS "/usr/bin" "/usr/local/bin"
+      NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH
+    )
+  endif()
+  if(NOT _host_cc)
+    message(FATAL_ERROR
+      "Cannot find a native host C compiler to build the minicc-c2str helper. "
+      "Set the CC_FOR_BUILD environment variable to the host compiler.")
+  endif()
+
+  set(_c2str_bin "${CMAKE_CURRENT_BINARY_DIR}/minicc-c2str-host")
+  execute_process(
+    COMMAND "${_host_cc}" -DC2STR=1 "${CMAKE_CURRENT_SOURCE_DIR}/conftest.c"
+            -o "${_c2str_bin}"
+    RESULT_VARIABLE _r
+    OUTPUT_VARIABLE _c2str_out
+    ERROR_VARIABLE  _c2str_err
   )
-  ExternalProject_Add(minicc-c2str-host
-    SOURCE_DIR "${_c2str_host_src_dir}"
-    BINARY_DIR "${_c2str_host_build_dir}"
-    INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS "${_c2str_host_build_dir}/minicc-c2str"
-  )
-  set(_c2str_dep minicc-c2str-host)
-  set(_c2str_cmd "${_c2str_host_build_dir}/minicc-c2str")
+  if(NOT _r EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to compile minicc-c2str host tool with '${_host_cc}':\n"
+      "${_c2str_out}\n${_c2str_err}")
+  endif()
+
+  set(_c2str_dep "${_c2str_bin}")
+  set(_c2str_cmd "${_c2str_bin}")
 else()
   add_executable(minicc-c2str conftest.c)
   target_compile_definitions(minicc-c2str PRIVATE C2STR=1)
