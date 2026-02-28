@@ -271,7 +271,11 @@ if(_minicc_target STREQUAL "")
   elseif(_minicc_proc MATCHES "riscv64")
     set(_minicc_target "riscv64")
   else()
-    message(FATAL_ERROR "Cannot auto-detect MiniCC target for processor '${CMAKE_SYSTEM_PROCESSOR}'. Set MINICC_NATIVE_TARGET explicitly.")
+    message(FATAL_ERROR
+      "MiniCC has no native backend for processor '${CMAKE_SYSTEM_PROCESSOR}'. "
+      "Supported targets: i386, x86_64, arm, arm64, riscv64, wasm32. "
+      "If TCC JIT is optional (e.g. via miniexpr), disable it with "
+      "MINIEXPR_ENABLE_TCC_JIT=OFF instead of building minicc directly.")
   endif()
 endif()
 string(TOLOWER "${_minicc_target}" _minicc_target)
