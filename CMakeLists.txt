@@ -92,14 +92,32 @@ configure_file(
   @ONLY
 )
 
-add_executable(minicc-c2str conftest.c)
-target_compile_definitions(minicc-c2str PRIVATE C2STR=1)
+# minicc-c2str is a build-time host tool (generates tccdefs_.h).
+# When cross-compiling, build it natively so it can run on the build host.
+if(CMAKE_CROSSCOMPILING)
+  include(ExternalProject)
+  set(_c2str_host_build_dir "${CMAKE_CURRENT_BINARY_DIR}/c2str-host-build")
+  ExternalProject_Add(minicc-c2str-host
+    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/c2str-host"
+    BINARY_DIR "${_c2str_host_build_dir}"
+    CMAKE_ARGS "-DC2STR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/conftest.c"
+    INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "${_c2str_host_build_dir}/minicc-c2str"
+  )
+  set(_c2str_dep minicc-c2str-host)
+  set(_c2str_cmd "${_c2str_host_build_dir}/minicc-c2str")
+else()
+  add_executable(minicc-c2str conftest.c)
+  target_compile_definitions(minicc-c2str PRIVATE C2STR=1)
+  set(_c2str_dep minicc-c2str)
+  set(_c2str_cmd minicc-c2str)
+endif()
 
 set(MINICC_TCCDEFS "${CMAKE_CURRENT_BINARY_DIR}/tccdefs_.h")
 add_custom_command(
   OUTPUT "${MINICC_TCCDEFS}"
-  COMMAND minicc-c2str "${CMAKE_CURRENT_SOURCE_DIR}/include/tccdefs.h" "${MINICC_TCCDEFS}"
-  DEPENDS minicc-c2str "${CMAKE_CURRENT_SOURCE_DIR}/include/tccdefs.h"
+  COMMAND "${_c2str_cmd}" "${CMAKE_CURRENT_SOURCE_DIR}/include/tccdefs.h" "${MINICC_TCCDEFS}"
+  DEPENDS ${_c2str_dep} "${CMAKE_CURRENT_SOURCE_DIR}/include/tccdefs.h"
   VERBATIM
 )
 add_custom_target(minicc-predefs DEPENDS "${MINICC_TCCDEFS}")
@@ -180,7 +198,17 @@ endfunction()
 
 set(_minicc_target "${MINICC_NATIVE_TARGET}")
 if(_minicc_target STREQUAL "")
-  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _minicc_proc)
+  # On Apple, CMAKE_OSX_ARCHITECTURES takes precedence over CMAKE_SYSTEM_PROCESSOR
+  # because conda-forge and other cross-compilation setups set the architectures flag
+  # while CMAKE_SYSTEM_PROCESSOR may still reflect the host.
+  set(_minicc_proc "")
+  if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(GET CMAKE_OSX_ARCHITECTURES 0 _minicc_osx_arch)
+    string(TOLOWER "${_minicc_osx_arch}" _minicc_proc)
+  endif()
+  if(_minicc_proc STREQUAL "")
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _minicc_proc)
+  endif()
   if(_minicc_proc MATCHES "^(x86_64|amd64)$")
     set(_minicc_target "x86_64")
   elseif(_minicc_proc MATCHES "^(i[3-6]86|x86)$")
