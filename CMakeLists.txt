@@ -117,14 +117,23 @@ if(CMAKE_CROSSCOMPILING)
   if(NOT _host_cc AND DEFINED ENV{CC_FOR_BUILD})
     set(_host_cc "$ENV{CC_FOR_BUILD}")
   endif()
-  # Last resort: look in standard system locations, avoiding PATH entries
-  # that may contain the cross-compiler.
+  # Try standard system locations, bypassing PATH which may contain the
+  # cross-compiler (e.g. conda-forge sets CC to a triple-prefixed wrapper).
   if(NOT _host_cc)
-    find_program(_host_cc NAMES cc clang gcc
-      PATHS "/usr/bin" "/usr/local/bin"
+    find_program(_host_cc NAMES cc gcc clang
+      PATHS "/usr/bin" "/usr/local/bin" "/bin"
       NO_DEFAULT_PATH
       NO_CMAKE_FIND_ROOT_PATH
     )
+  endif()
+  # Final fallback: search CMake's default paths (PATH env), but skip the
+  # sysroot. On Linux, cross-compilers always use a triple-prefixed name
+  # (e.g. aarch64-...-gcc), so plain 'cc'/'gcc' in PATH is the native one.
+  if(NOT _host_cc)
+    find_program(_host_cc_fallback NAMES cc gcc clang
+      NO_CMAKE_FIND_ROOT_PATH
+    )
+    set(_host_cc "${_host_cc_fallback}")
   endif()
   if(NOT _host_cc)
     message(FATAL_ERROR
