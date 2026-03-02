@@ -34,7 +34,21 @@ static void *memcpy(void* d, void* s, __SIZE_TYPE__ c) {
 #if !defined __riscv && !defined __APPLE__
 void __clear_cache(void *beg, void *end)
 {
+#if defined(__aarch64__) && defined(__linux__)
+    uintptr_t start = (uintptr_t)beg & ~(uintptr_t)63;
+    uintptr_t stop = (uintptr_t)end;
+    for (uintptr_t p = start; p < stop; p += 64) {
+        __asm__ __volatile__("dc cvau, %0" : : "r"(p) : "memory");
+    }
+    __asm__ __volatile__("dsb ish" : : : "memory");
+    for (uintptr_t p = start; p < stop; p += 64) {
+        __asm__ __volatile__("ic ivau, %0" : : "r"(p) : "memory");
+    }
+    __asm__ __volatile__("dsb ish" : : : "memory");
+    __asm__ __volatile__("isb" : : : "memory");
+#else
     __builtin___clear_cache(beg, end);
+#endif
 }
 #endif
 
