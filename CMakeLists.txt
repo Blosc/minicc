@@ -385,7 +385,7 @@ if(MINICC_ENABLE_TESTING)
   if(TARGET wasm32-tcc)
     find_program(MINICC_NODE_EXECUTABLE node)
     if(MINICC_NODE_EXECUTABLE)
-      foreach(_wasm_test ll_helpers call_indirect globals static_ptr_init ftoi_casts frame_locals)
+      foreach(_wasm_test ll_helpers call_indirect data_init numeric_conversions)
         add_test(
           NAME minicc.wasm.${_wasm_test}
           COMMAND ${CMAKE_COMMAND}

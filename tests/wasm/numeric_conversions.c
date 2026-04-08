@@ -1,5 +1,15 @@
 typedef unsigned int u32;
 
+static int cast_double_to_int(double x)
+{
+    return (int)x;
+}
+
+static unsigned cast_double_to_uint(double x)
+{
+    return (unsigned)x;
+}
+
 int main(void)
 {
     int err = 0;
@@ -7,6 +17,7 @@ int main(void)
     float fu = 12345.875f;
     double ds = 98.5;
     double du = 54321.125;
+
     if ((int)fs != -12)
         err |= 1;
 
@@ -24,6 +35,13 @@ int main(void)
 
     if ((u32)(du - 21.0) != 54300u)
         err |= 32;
+
+    /* Exercise helper-call paths with caller locals kept live across calls. */
+    if (cast_double_to_int(ds) != 98)
+        err |= 64;
+
+    if (cast_double_to_uint(du) != 54321u)
+        err |= 128;
 
     return err;
 }

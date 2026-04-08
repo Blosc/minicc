@@ -1,6 +1,14 @@
 static const int ro_vals[3] = { 19, 21, 23 };
+static const int *ro_ptr = ro_vals;
 static int data_val = 7;
 static int bss_buf[4];
+
+static int ret3(void)
+{
+    return 3;
+}
+
+static int (*fn_ptr)(void) = ret3;
 
 static int bump(void)
 {
@@ -15,18 +23,24 @@ int main(void)
     if (ro_vals[0] != 19 || ro_vals[1] != 21 || ro_vals[2] != 23)
         err |= 1;
 
-    if (data_val != 7)
+    if (ro_ptr[0] != 19 || ro_ptr[1] != 21 || ro_ptr[2] != 23)
         err |= 2;
 
-    if (bss_buf[0] != 0 || bss_buf[3] != 0)
+    if (data_val != 7)
         err |= 4;
+
+    if (bss_buf[0] != 0 || bss_buf[3] != 0)
+        err |= 8;
 
     bss_buf[2] = 11;
     if (bss_buf[2] != 11)
-        err |= 8;
+        err |= 16;
 
     if (bump() != 12)
-        err |= 16;
+        err |= 32;
+
+    if (fn_ptr() != 3)
+        err |= 64;
 
     return err;
 }
