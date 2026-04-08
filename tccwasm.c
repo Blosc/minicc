@@ -1246,7 +1246,7 @@ static void wasm_emit_case(WasmBuf *b, WasmFuncIR *f, WasmOp *op,
             int r1_local = wasm_f64_reg_local(op->r1, local_f0);
             WB_GET_OR_SKIP(b, r1_local);
         }
-        wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xab : 0xa9);
+        wb_u8(b, (op->flags & WASM_OP_FLAG_INVERT) ? 0xab : 0xaa);
         WB_SET_OR_TEE(b, dst);
         break;
 
