@@ -1375,12 +1375,14 @@ static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
     local_f0 = local_i0 + 4;
     local_tmp64 = local_f0 + 4;
 
-    /* prolog: set fp and reserve stack */
+    /* Prolog: keep fp at the caller-visible stack top. The wasm backend
+     * addresses frame slots using negative offsets, so fp must point to the
+     * original stack pointer before reserving the current frame. */
     if (f->frame_size) {
         wb_global_get(&body, 0);
+        wb_local_tee(&body, local_fp);
         wb_i32_const(&body, f->frame_size);
         wb_u8(&body, 0x6b); /* i32.sub */
-        wb_local_tee(&body, local_fp);
         wb_global_set(&body, 0);
     } else {
         wb_global_get(&body, 0);
@@ -1965,8 +1967,6 @@ static void wasm_emit_function_body(WasmBuf *code, WasmFuncIR *f, TCCState *s1)
 
     /* epilog: restore stack pointer */
     wb_local_get(&body, local_fp);
-    if (f->frame_size)
-        wb_i32_const(&body, f->frame_size), wb_u8(&body, 0x6a);
     wb_global_set(&body, 0);
 
     if (f->ret_type == WASM_VAL_I32)
