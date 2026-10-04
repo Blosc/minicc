@@ -421,6 +421,43 @@ done:
     return rc;
 }
 
+static int test_runtime_storage(void)
+{
+    int i;
+    for (i = 0; i < 100; ++i) {
+        ErrorLog log = {0};
+        TCCState *s = new_state(&log);
+        int (*fn)(int);
+        int *data;
+        int rc;
+        if (!s)
+            return 1;
+        rc = tcc_compile_string(s,
+            "int data = 3; int zero; const int bias = 7;"
+            "int update(int x) { zero += x; data += zero; return data + bias; }");
+        if (rc >= 0)
+            rc = tcc_relocate(s);
+        if (rc < 0) {
+            fprintf(stderr, "%s", log.buf);
+            tcc_delete(s);
+            return 1;
+        }
+        fn = (int (*)(int))tcc_get_symbol(s, "update");
+        data = (int *)tcc_get_symbol(s, "data");
+        if (!fn || !data || fn(2) != 12 || fn(3) != 17 || *data != 10) {
+            tcc_delete(s);
+            return 1;
+        }
+        /* A second relocation must report an error, not terminate the host. */
+        if (tcc_relocate(s) >= 0 || !has_text(&log, "twice")) {
+            tcc_delete(s);
+            return 1;
+        }
+        tcc_delete(s);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *name;
@@ -448,6 +485,8 @@ int main(int argc, char **argv)
         rc = test_symbol_listing_contract();
     else if (strcmp(name, "state_macro_isolation") == 0)
         rc = test_state_macro_isolation();
+    else if (strcmp(name, "runtime_storage") == 0)
+        rc = test_runtime_storage();
     else {
         fprintf(stderr, "unknown case: %s\n", name);
         return 2;

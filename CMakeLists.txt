@@ -360,6 +360,12 @@ if(MINICC_ENABLE_TESTING)
   include(CTest)
   add_test(NAME minicc.version COMMAND $<TARGET_FILE:tcc> -v)
 
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
+    add_executable(minicc-memfd-test tests/memfd_test.c)
+    target_include_directories(minicc-memfd-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME minicc.memfd COMMAND minicc-memfd-test)
+  endif()
+
   add_executable(minicc-libtcc-api-test tests/libtcc_api_test.c)
   target_include_directories(minicc-libtcc-api-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(minicc-libtcc-api-test PRIVATE minicc_libtcc)
@@ -375,7 +381,8 @@ if(MINICC_ENABLE_TESTING)
       multi_unit_api_flow
       define_option_flow
       symbol_listing_contract
-      state_macro_isolation)
+      state_macro_isolation
+      runtime_storage)
     add_test(
       NAME minicc.libtcc.${_libtcc_case}
       COMMAND $<TARGET_FILE:minicc-libtcc-api-test> ${_libtcc_case}

@@ -41,6 +41,14 @@ makeinfo must be installed to compile the doc.  By default, tcc is
 installed in /usr/local/bin.  ./configure --help  shows configuration
 options.
 
+Native Linux runtime allocation uses anonymous memfd-backed shared mappings:
+one writable alias for emitting code and data, and one read/execute alias for
+entry points.  This is the default in both configure and CMake builds, including
+libtcc, and requires no libselinux dependency or temporary binary files.
+Unsupported syscalls or policy-denied executable mappings are reported as
+relocation errors; there is no filesystem fallback.  Embedders should install
+tcc_set_error_func() and check tcc_relocate() before using a generated function.
+
 
 2) Introduction
 

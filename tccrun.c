@@ -104,15 +104,28 @@ static void win64_del_function_table(void *);
 
 #define PAGEALIGN(n) ((addr_t)n + (-(addr_t)n & (PAGESIZE-1)))
 
-#if !_WIN32 && !__APPLE__
-//#define CONFIG_SELINUX 1
+#if defined(__linux__)
+/* Native Linux uses anonymous file-backed aliases in both CMake and configure
+   builds, regardless of the build host's SELinux settings. */
+#define CONFIG_TCC_MEMFD 1
+#include "tcc_memfd.h"
+#ifndef CONFIG_SELINUX
+#define CONFIG_SELINUX 1
+#endif
 #endif
 
 static int rt_mem(TCCState *s1, int size)
 {
     void *ptr;
     int ptr_diff = 0;
-#ifdef CONFIG_SELINUX
+#ifdef CONFIG_TCC_MEMFD
+    const char *operation;
+    ptr = tcc_memfd_alloc(size, PAGESIZE, &operation);
+    if (ptr == MAP_FAILED)
+        return tcc_error_noabort("tccrun: %s failed: %s", operation, strerror(errno));
+    ptr_diff = size;
+    size *= 2;
+#elif defined(CONFIG_SELINUX)
     /* Using mmap instead of malloc */
     void *prw;
     char tmpfname[] = "/tmp/.tccrunXXXXXX";
@@ -146,7 +159,7 @@ LIBTCCAPI int tcc_relocate(TCCState *s1)
     int size, ret, ptr_diff;
 
     if (s1->run_ptr)
-        exit(tcc_error_noabort("'tcc_relocate()' twice is no longer supported"));
+        return tcc_error_noabort("'tcc_relocate()' twice is no longer supported");
 #ifdef CONFIG_TCC_BACKTRACE
     if (s1->do_backtrace)
         tcc_add_symbol(s1, "_tcc_backtrace", _tcc_backtrace); /* for bt-log.c */
@@ -354,6 +367,11 @@ redo:
             s = s1->sections[i];
             if (shf[k] != (s->sh_flags & (SHF_ALLOC|SHF_WRITE|SHF_EXECINSTR)))
                 continue;
+#ifdef CONFIG_TCC_MEMFD
+            /* Reject oversized sections before narrowing ELF-sized fields. */
+            if (s->data_offset > INT_MAX / 2 || s->sh_addralign > INT_MAX / 2)
+                return tcc_error_noabort("tccrun: executable allocation is too large");
+#endif
             length = s->data_offset;
             if (copy == 2) {
                 if (addr == 0)
@@ -390,6 +408,14 @@ redo:
             }
             s->sh_addralign = align;
             addr = k ? mem + ptr_diff : mem;
+            /* rt_mem and its fixed-distance alias use signed int sizes. */
+#ifdef CONFIG_TCC_MEMFD
+            if (align == 0 || (align & (align - 1)) ||
+                offset > INT_MAX / 2 || align > INT_MAX / 2 ||
+                length > INT_MAX / 2 - offset ||
+                ((-(addr + offset)) & (align - 1)) > INT_MAX / 2 - offset - length)
+                return tcc_error_noabort("tccrun: executable allocation is too large");
+#endif
             offset += -(addr + offset) & (align - 1);
             s->sh_addr = mem ? addr + offset : 0;
             offset += length;
@@ -398,8 +424,16 @@ redo:
             if (n == 0) /* no data  */
                 continue;
 #ifdef CONFIG_SELINUX
-            if (k == 0) /* SHF_EXECINSTR has its own mapping */
+            if (k == 0) { /* SHF_EXECINSTR has its own mapping */
+#if defined(TCC_TARGET_ARM) || defined(TCC_TARGET_ARM64) || defined(TCC_TARGET_RISCV64)
+                void __clear_cache(void *beginning, void *end);
+                /* Publish stores through the RW alias, then invalidate the
+                   instruction cache for the RX addresses used by callers. */
+                __clear_cache((char *)addr + ptr_diff, (char *)addr + ptr_diff + n);
+                __clear_cache((void *)addr, (char *)addr + n);
+#endif
                 continue;
+            }
 #endif
             f = k;
             if (f >= CONFIG_RUNMEM_RO) {
@@ -418,8 +452,13 @@ redo:
         }
     }
 
-    if (0 == mem)
+    if (0 == mem) {
+#ifdef CONFIG_TCC_MEMFD
+        if (PAGEALIGN(offset) > INT_MAX / 2)
+            return tcc_error_noabort("tccrun: executable allocation is too large");
+#endif
         return PAGEALIGN(offset);
+    }
 
     if (++copy == 2) {
         goto redo;
