@@ -62,8 +62,8 @@ ST_DATA const int reg_classes[NB_REGS] = {
     RC_FLOAT,
 };
 
-ST_DATA WasmFuncIR *tcc_wasm_funcs;
-ST_DATA int tcc_wasm_nb_funcs;
+WasmFuncIR *tcc_wasm_funcs;
+int tcc_wasm_nb_funcs;
 
 static int tcc_wasm_cap_funcs;
 static WasmFuncIR *wasm_cur_func;
