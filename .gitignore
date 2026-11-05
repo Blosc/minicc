@@ -21,6 +21,7 @@ tcc_p
 *-tcc
 libtcc*.def
 
+build
 config*.h
 *_.h
 config*.mak

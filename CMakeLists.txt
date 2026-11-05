@@ -9,6 +9,7 @@ set(CMAKE_C_EXTENSIONS ON)
 option(MINICC_BUILD_WASM32_TCC "Build wasm32-tcc cross compiler" ON)
 option(MINICC_BUILD_SHARED_LIBTCC "Build shared libtcc (libtcc.so/libtcc.dylib)" ON)
 option(MINICC_ENABLE_TESTING "Enable CTest-based test harness" ON)
+option(MINICC_BOUNDS_CHECK "Enable bounds checking" ON)
 set(MINICC_NATIVE_TARGET "" CACHE STRING "Native backend target (auto, i386, x86_64, arm, arm64, riscv64, wasm32)")
 
 set_property(CACHE MINICC_NATIVE_TARGET PROPERTY STRINGS "" i386 x86_64 arm arm64 riscv64 wasm32)
@@ -39,6 +40,12 @@ if(CMAKE_C_COMPILER_VERSION)
   if(_minicc_cc_ver_len GREATER 1)
     list(GET _minicc_cc_ver 1 MINICC_GCC_MINOR)
   endif()
+endif()
+
+if(MINICC_BOUNDS_CHECK)
+  set(MINICC_CONFIG_BCHECK 1)
+else()
+  set(MINICC_CONFIG_BCHECK 0)
 endif()
 
 set(MINICC_CONFIG_TCCDIR "${CMAKE_INSTALL_PREFIX}/lib/tcc")
@@ -215,12 +222,14 @@ endfunction()
 function(minicc_object_format out_sources out_defines)
   set(_srcs)
   set(_defs)
-  if(WIN32)
-    list(APPEND _defs TCC_TARGET_PE)
-    list(APPEND _srcs tccpe.c)
-  elseif(APPLE)
-    list(APPEND _defs TCC_TARGET_MACHO)
-    list(APPEND _srcs tccmacho.c)
+  if(NOT MINICC_NATIVE_TARGET STREQUAL "wasm32")
+    if(WIN32)
+      list(APPEND _defs TCC_TARGET_PE)
+      list(APPEND _srcs tccpe.c)
+    elseif(APPLE)
+      list(APPEND _defs TCC_TARGET_MACHO)
+      list(APPEND _srcs tccmacho.c)
+    endif()
   endif()
 
   set(${out_sources} "${_srcs}" PARENT_SCOPE)
@@ -240,6 +249,8 @@ function(minicc_libtcc1_helpers_for_target target out_sources)
     list(APPEND _srcs lib/lib-arm64.c)
   elseif(target STREQUAL "riscv64")
     list(APPEND _srcs lib/lib-arm64.c)
+  elseif(target STREQUAL "wasm32")
+    # no helpers
   else()
     message(FATAL_ERROR "Unsupported MiniCC target for libtcc1 helpers: ${target}")
   endif()
@@ -270,6 +281,8 @@ if(_minicc_target STREQUAL "")
     set(_minicc_target "arm")
   elseif(_minicc_proc MATCHES "riscv64")
     set(_minicc_target "riscv64")
+  elseif(_minicc_proc MATCHES "wasm32")
+    set(_minicc_target "wasm32")
   else()
     message(FATAL_ERROR
       "MiniCC has no native backend for processor '${CMAKE_SYSTEM_PROCESSOR}'. "
@@ -366,28 +379,30 @@ if(MINICC_ENABLE_TESTING)
     add_test(NAME minicc.memfd COMMAND minicc-memfd-test)
   endif()
 
-  add_executable(minicc-libtcc-api-test tests/libtcc_api_test.c)
-  target_include_directories(minicc-libtcc-api-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(minicc-libtcc-api-test PRIVATE minicc_libtcc)
-  if(MINICC_SYSTEM_LIBS)
-    target_link_libraries(minicc-libtcc-api-test PRIVATE ${MINICC_SYSTEM_LIBS})
-  endif()
+  if(NOT MINICC_NATIVE_TARGET STREQUAL "wasm32")
+    add_executable(minicc-libtcc-api-test tests/libtcc_api_test.c)
+    target_include_directories(minicc-libtcc-api-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(minicc-libtcc-api-test PRIVATE minicc_libtcc)
+    if(MINICC_SYSTEM_LIBS)
+      target_link_libraries(minicc-libtcc-api-test PRIVATE ${MINICC_SYSTEM_LIBS})
+    endif()
 
-  foreach(_libtcc_case
-      state_lifecycle
-      error_callback_contract
-      compile_fail_no_crash
-      symbol_resolution_order
-      multi_unit_api_flow
-      define_option_flow
-      symbol_listing_contract
-      state_macro_isolation
-      runtime_storage)
-    add_test(
-      NAME minicc.libtcc.${_libtcc_case}
-      COMMAND $<TARGET_FILE:minicc-libtcc-api-test> ${_libtcc_case}
-    )
-  endforeach()
+    foreach(_libtcc_case
+        state_lifecycle
+        error_callback_contract
+        compile_fail_no_crash
+        symbol_resolution_order
+        multi_unit_api_flow
+        define_option_flow
+        symbol_listing_contract
+        state_macro_isolation
+        runtime_storage)
+      add_test(
+        NAME minicc.libtcc.${_libtcc_case}
+        COMMAND $<TARGET_FILE:minicc-libtcc-api-test> ${_libtcc_case}
+      )
+    endforeach()
+  endif()
 
   if(TARGET wasm32-tcc)
     find_program(MINICC_NODE_EXECUTABLE node)
