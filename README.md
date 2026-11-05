@@ -44,6 +44,7 @@ Useful options (all `ON` by default):
 | `MINICC_BUILD_SHARED_LIBTCC`| Build shared `libtcc` (`.so`/`.dylib`) |
 | `MINICC_ENABLE_TESTING`     | Enable the CTest harness |
 | `MINICC_NATIVE_TARGET`      | Force the native backend (`i386`, `x86_64`, `arm`, `arm64`, `riscv64`, `wasm32`) |
+| `MINICC_BOUNDS_CHECK`       | Enable bounds checking |
 
 Run the tests with `ctest --test-dir build`.
 
